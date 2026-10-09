@@ -284,6 +284,28 @@ pytest tests/test_cogexec.py -q
 人工规则与网络能力：操作 origin 明确标记 hand_rule；神经网络未参与
 解题推理（只做分类候选），如实区分、不混为一谈。
 
+## 可学习的认知技能（Phase 4D：归纳→验证→组合，CPU 可运行）
+
+```powershell
+py -m cognitive_ai.cli rule-induce --train ex.jsonl --domain math --name double --save
+py -m cognitive_ai.cli rule-validate lr_double --train ex.jsonl --heldout ho.jsonl --activate
+py -m cognitive_ai.cli rule-list
+pytest tests/test_rulelearn.py -q
+```
+
+`LearnableRule` 结构化存 DB（`learnable_rules` 表）：slot/transform 两族
+受限 DSL（bind/check/compute/emit，禁 eval，无代码生成）；归纳器只拟合
+参数式（仿射精确拟合、mod 分类需每剩余类≥2 例防记忆、合取贪心覆盖），
+歧义多候选必须 `rule-select` 人工选择，晋升要独立验证（训练 100% +
+held-out≥0.75 + 反例全拒 + 非法输入安全）+ 版本/回滚；执行器经
+`ApplyLearnedRule`（origin=induced_rule，调用计数）实际调用，支持链式
+组合（_prev 传递，轨迹记录）；seed 规则经 `apply_rule(*)` 接入概念流程。
+实验：A 双规则组合解未见输入（6→13、9→19）；B 反例否决过宽规则；
+C 奇偶迁移新实例；D 未见组合。`学规则` 聊天分步收集示例→候选（不自动晋升）。
+能力归属：人工操作（operations/reasoner/mathengine/seed 规则）/用户监督
+（示例与选择）/系统归纳（候选+验证报告）/独立验证能力（held-out 通过项）
+四者分离记录（experiences outcome 字段）。
+
 ## 下一阶段计划
 
 1. 更严格的研究证据门槛：同一结论需两个独立来源才进入知识库。

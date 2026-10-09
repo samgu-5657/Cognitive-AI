@@ -548,6 +548,107 @@ def cmd_neural_cycle(a):
     mem.close()
 
 
+def _load_example_file(path: str) -> list[dict]:
+    rows = []
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if line:
+                rows.append(json.loads(line))
+    return rows
+
+
+def cmd_rule_induce(a):
+    from cognitive_ai import rulelearn as RL
+    train = _load_example_file(a.train)
+    negs = _load_example_file(a.neg) if a.neg else []
+    rep = RL.induce(train, negs, domain=a.domain)
+    print(json.dumps(rep, ensure_ascii=False, indent=2, default=str))
+    if a.save and rep["candidates"]:
+        mem = get_memory()
+        rid = RL.new_rule_id(a.name)
+        mem.save_rule(RL.make_proposal_record(
+            rid, a.name, a.domain, rep["candidates"],
+            evidence=[{"train": a.train, "neg": a.neg}]))
+        mem.add_experience("evaluation", f"rule proposal {rid}",
+                           {"op": "rule_induce", "outcome": "candidate",
+                            "candidates": len(rep["candidates"]),
+                            "ambiguous": rep["ambiguous"]})
+        print(json.dumps({"saved": rid}, ensure_ascii=False))
+        mem.close()
+
+
+def cmd_rule_list(a):
+    from cognitive_ai import rulelearn as RL  # noqa: F401
+    mem = get_memory()
+    for r in mem.list_rules_learned(status=a.status or None,
+                                    domain=a.domain or None):
+        print(f"{r['id']} v{r['version']} [{r['status']}] {r['name']} "
+              f"calls={r['calls']}/{r['successes']}/{r['failures']}")
+    mem.close()
+
+
+def cmd_rule_show(a):
+    mem = get_memory()
+    print(json.dumps(mem.get_rule(a.rule_id), ensure_ascii=False,
+                     indent=2, default=str))
+    mem.close()
+
+
+def cmd_rule_select(a):
+    from cognitive_ai import rulelearn as RL
+    mem = get_memory()
+    row = mem.get_rule(a.rule_id)
+    if not row:
+        print(json.dumps({"ok": False, "error": "rule not found"}))
+        return
+    out = RL.select_candidate(row, a.index, a.reason)
+    if out.get("ok"):
+        mem.save_rule(row)
+    print(json.dumps(out, ensure_ascii=False))
+
+
+def cmd_rule_validate(a):
+    from cognitive_ai import rulelearn as RL
+    mem = get_memory()
+    row = mem.get_rule(a.rule_id)
+    if not row:
+        print(json.dumps({"ok": False, "error": "rule not found"}))
+        mem.close()
+        return
+    try:
+        spec = RL.selected_spec(row)
+    except RL.Unsupported as e:
+        print(json.dumps({"ok": False, "error": str(e)}))
+        mem.close()
+        return
+    held = _load_example_file(a.heldout)
+    negs = _load_example_file(a.neg) if a.neg else []
+    train = _load_example_file(a.train) if a.train else []
+    from cognitive_ai.ontology import Ontology
+    rep = RL.validate_rule(spec, train, held, negs, Ontology(mem))
+    row["validation"] = {**rep, "selected":
+                         row["spec"].get("selected")}
+    out = RL.promote_record(mem, a.rule_id, "validated",
+                            validation=row["validation"])
+    if out.get("ok") and a.activate:
+        out = RL.promote_record(mem, a.rule_id, "active")
+    mem.add_experience("evaluation", f"rule validate {a.rule_id}: {out}",
+                       {"op": "rule_validate", "outcome": "rule",
+                        "report": rep})
+    print(json.dumps({"validation": rep, "promotion": out},
+                     ensure_ascii=False, indent=2, default=str))
+    mem.close()
+
+
+def cmd_rule_rollback(a):
+    from cognitive_ai import rulelearn as RL
+    mem = get_memory()
+    print(json.dumps(RL.rollback_record(mem, a.rule_id),
+                     ensure_ascii=False))
+    mem.close()
+
+
 def cmd_doctor(_a):
     mem = get_memory()
     onto = Ontology(mem)
@@ -657,6 +758,23 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--batch-min", type=int, default=5); s.add_argument("--epochs", type=int, default=30)
     s.add_argument("--budget", type=float, default=600.0)
     s.set_defaults(fn=cmd_neural_cycle)
+    s = sub.add_parser("rule-induce"); s.add_argument("--train", required=True)
+    s.add_argument("--neg", default=None); s.add_argument("--domain", default="math")
+    s.add_argument("--name", required=True); s.add_argument("--save", action="store_true")
+    s.set_defaults(fn=cmd_rule_induce)
+    s = sub.add_parser("rule-list"); s.add_argument("--status", default=None)
+    s.add_argument("--domain", default=None); s.set_defaults(fn=cmd_rule_list)
+    s = sub.add_parser("rule-show"); s.add_argument("rule_id")
+    s.set_defaults(fn=cmd_rule_show)
+    s = sub.add_parser("rule-select"); s.add_argument("rule_id")
+    s.add_argument("index", type=int); s.add_argument("--reason", default="reviewer choice")
+    s.set_defaults(fn=cmd_rule_select)
+    s = sub.add_parser("rule-validate"); s.add_argument("rule_id")
+    s.add_argument("--train", default=None); s.add_argument("--heldout", required=True)
+    s.add_argument("--neg", default=None); s.add_argument("--activate", action="store_true")
+    s.set_defaults(fn=cmd_rule_validate)
+    s = sub.add_parser("rule-rollback"); s.add_argument("rule_id")
+    s.set_defaults(fn=cmd_rule_rollback)
     sub.add_parser("doctor").set_defaults(fn=cmd_doctor)
     return p
 

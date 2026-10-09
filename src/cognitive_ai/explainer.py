@@ -52,7 +52,11 @@ def _explain_math(trace, style) -> dict:
 def _explain_conceptual(trace, style) -> dict:
     attrs = [s for s in trace["steps"] if s.get("op") == "query_attribute"
              and s.get("status") != "failed"]
-    if not attrs:
+    learned = [s for s in trace["steps"] if s.get("op") == "apply_learned"
+               and s.get("status") == "verified"]
+    rules = [s for s in trace["steps"] if s.get("op") == "apply_rule"
+             and s.get("status") == "verified"]
+    if not attrs and not learned:
         return {"text": "没有查到相关知识,无法回答。",
                 "certainty": "unknown", "citations": []}
     lines, cites, certain = [], [], True
@@ -79,8 +83,26 @@ def _explain_conceptual(trace, style) -> dict:
         text = lines[0]
     else:
         text = "\n".join(["结论:"] + [f"  {l}" for l in lines])
+    for s in learned:
+        for app in s.get("outputs", {}).get("applied", []):
+            o = app.get("output", {}) or {}
+            label = o.get("label", o.get("value", o))
+            lines.append(f"归纳规则{app['rule_id']}给出:{label}"
+                         f"(候选知识,来自已验证规则,非断言事实)")
+            cites.append(_cite(s))
+    for s in rules:
+        for f in s.get("outputs", {}).get("fired", []):
+            lines.append(f"已验证规则{f.get('rule')}给出:{f.get('conclusion')}")
+            cites.append(_cite(s))
+    if style == "short" and lines:
+        text = lines[0]
+    elif lines:
+        text = "\n".join(["结论:"] + [f"  {l}" for l in lines])
+    else:
+        text = "没有查到相关知识,无法回答。"
     return {"text": text,
-            "certainty": "certain" if certain else "qualified",
+            "certainty": "certain" if certain and not learned else
+            ("qualified" if (lines and (not certain or learned)) else "unknown"),
             "citations": cites}
 
 

@@ -139,6 +139,22 @@ CREATE TABLE IF NOT EXISTS cog_tasks(
   status TEXT NOT NULL DEFAULT 'created',
   created_at TEXT NOT NULL
 );
+-- Phase 4D: learnable rules with versions + invocation counters (additive)
+CREATE TABLE IF NOT EXISTS learnable_rules(
+  id TEXT PRIMARY KEY,
+  version INTEGER NOT NULL DEFAULT 1,
+  name TEXT NOT NULL DEFAULT '',
+  domain TEXT NOT NULL DEFAULT '',
+  spec TEXT NOT NULL DEFAULT '{}',
+  status TEXT NOT NULL DEFAULT 'candidate',
+  validation TEXT NOT NULL DEFAULT '{}',
+  calls INTEGER NOT NULL DEFAULT 0,
+  successes INTEGER NOT NULL DEFAULT 0,
+  failures INTEGER NOT NULL DEFAULT 0,
+  previous TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 """
 
 # Additive per-column migrations for databases created before Phase 2.
@@ -436,6 +452,56 @@ class Memory:
         return self.query(
             "SELECT * FROM lifecycle_events WHERE target_ref=? ORDER BY id",
             (target_ref,))
+
+    # ---- learnable rules (Phase 4D; structured specs, never prose) ----
+    def save_rule(self, rule: dict) -> None:
+        self.execute(
+            "INSERT INTO learnable_rules(id,version,name,domain,spec,status,"
+            "validation,calls,successes,failures,previous,created_at,updated_at)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)"
+            " ON CONFLICT(id) DO UPDATE SET version=excluded.version,"
+            " name=excluded.name, domain=excluded.domain, spec=excluded.spec,"
+            " status=excluded.status, validation=excluded.validation,"
+            " calls=excluded.calls, successes=excluded.successes,"
+            " failures=excluded.failures, previous=excluded.previous,"
+            " updated_at=excluded.updated_at",
+            (rule["id"], int(rule.get("version", 1)), rule.get("name", ""),
+             rule.get("domain", ""),
+             json.dumps(rule.get("spec", {}), ensure_ascii=False),
+             rule.get("status", "candidate"),
+             json.dumps(rule.get("validation", {}), ensure_ascii=False),
+             int(rule.get("calls", 0)), int(rule.get("successes", 0)),
+             int(rule.get("failures", 0)),
+             json.dumps(rule.get("previous", ""), ensure_ascii=False),
+             rule.get("created_at", _utcnow()), _utcnow()))
+
+    def get_rule(self, rid: str) -> Optional[dict]:
+        row = self.query_one("SELECT * FROM learnable_rules WHERE id=?",
+                             (rid,))
+        return self._decode_rule(row) if row else None
+
+    def list_rules_learned(self, status: Optional[str] = None,
+                           domain: Optional[str] = None) -> list[dict]:
+        sql, params = "SELECT * FROM learnable_rules WHERE 1=1", []
+        if status:
+            sql += " AND status=?"
+            params.append(status)
+        if domain:
+            sql += " AND domain=?"
+            params.append(domain)
+        sql += " ORDER BY id"
+        return [self._decode_rule(r) for r in self.query(sql, tuple(params))]
+
+    @staticmethod
+    def _decode_rule(row: dict) -> dict:
+        row = dict(row)
+        for k in ("spec", "validation", "previous"):
+            try:
+                row[k] = json.loads(row[k]) if isinstance(row[k], str) \
+                    else row[k]
+            except Exception:
+                row[k] = {} if k != "previous" else ""
+        return row
 
     # ---- dialogue context (per session; never shared across sessions) ----
     def get_context(self, session: str) -> dict:

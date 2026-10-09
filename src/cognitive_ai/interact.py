@@ -45,6 +45,7 @@ ALIASES = {
     "取消": "cancel", "理解": "understand", "确认": "confirm",
     "上下文": "context", "清空上下文": "clear_context",
     "解题": "solve", "求解": "solve", "任务": "task",
+    "学规则": "rule_learn",
 }
 
 TEACH_STAGES = ("attrs", "function", "category", "done")
@@ -63,6 +64,7 @@ class Session:
         self.models_root = models_root
         self.queue_path = queue_path
         self.pending_teach: dict | None = None
+        self.pending_rule: dict | None = None
         self.pending_frame: dict | None = None
         self.session_id = uuid.uuid4().hex[:12]
         self._adapter = None
@@ -111,14 +113,21 @@ class Session:
     # ---- entry ----
     def handle(self, line: str) -> list[str]:
         line = (line or "").strip()
-        if not line:
+        parts = line.split()
+        if not parts:
+            # empty line advances staged flows (skip), else ignored
+            if self.pending_teach:
+                return self._teach_answer(line)
+            if self.pending_rule:
+                return self._rule_next(self.pending_rule)
             return ["(空输入,已忽略)"]
-        if self.pending_teach and not line.split()[0] in (
-                "cancel", "取消", "quit", "退出"):
-            return self._teach_answer(line)
         parts = line.split()
         cmd = ALIASES.get(parts[0], parts[0]).lower()
         args = parts[1:]
+        if self.pending_teach and cmd not in ("cancel", "quit"):
+            return self._teach_answer(line)
+        if self.pending_rule and cmd not in ("cancel", "quit"):
+            return self._rule_answer(line)
         fn = {"help": self._help, "quit": self._quit,
               "concepts": self._concepts, "inspect": self._inspect,
               "predict": self._predict, "observe": self._observe,
@@ -131,6 +140,7 @@ class Session:
               "understand": self._understand, "confirm": self._confirm,
               "context": self._context, "clear_context": self._clear_context,
               "solve": self._solve, "task": self._task,
+              "rule_learn": self._rule_learn,
               }.get(cmd)
         if fn is None:
             return self._fallback(line)
@@ -157,6 +167,7 @@ class Session:
             "  确认/confirm                  执行待确认的解析(无待确认则空转)",
             "  解题/solve <问题>             统一认知执行(数学/概念/逻辑)",
             "  任务/task <id>                查看已保存任务的推理轨迹",
+            "  学规则/rule_learn <名称> <领域>  分步提交示例并归纳候选规则",
             "  上下文/context  清空上下文/clear_context  会话指代记忆管理",
             "  队列/queue [pending]  审核/review <id> -- 训练样本审核",
             "  经历/历史/模型  experiences/history/model",
@@ -165,10 +176,12 @@ class Session:
 
     def _quit(self, args) -> list[str]:
         self.pending_teach = None
+        self.pending_rule = None
         return ["__quit__", "再见,所有已保存数据都在数据库中。"]
 
     def _cancel(self, args) -> list[str]:
         self.pending_teach = None
+        self.pending_rule = None
         return ["已取消当前教学,已记录的内容保留,未填的保持未知。"]
 
     # ---- read paths ----
@@ -689,6 +702,124 @@ class Session:
             out.append(f"  {s.get('op')}: {s.get('status')} "
                        f"{str(s.get('note', ''))[:80]}")
         return out
+
+    # ---- rule teaching flow (Phase 4D): examples -> counterexamples ->
+    # held-out -> induce (candidate only, never auto-promoted)
+    def _rule_learn(self, args) -> list[str]:
+        if len(args) < 2:
+            return ["用法: 学规则 <名称> <领域math|concepts>  (随后分步给示例)"]
+        name, domain = args[0], args[1]
+        if domain not in ("math", "concepts"):
+            return [f"领域仅支持 math/concepts,得到 {domain}。"]
+        self.pending_rule = {"name": name, "domain": domain,
+                             "stage": "examples", "examples": [],
+                             "negatives": [], "heldout": []}
+        return [f"[rule_learn] 为规则'{name}'({domain})收集示例。",
+                "先给正例,每行一个,math形如 n=5 => 11；concepts形如 "
+                "颜色=红,形状=圆 => 苹果。空行进入下一步。"]
+
+    @staticmethod
+    def _parse_rule_line(line: str, domain: str) -> dict | None:
+        if "=>" not in line:
+            return None
+        left, right = line.split("=>", 1)
+        if domain == "math":
+            try:
+                inputs, outputs = {}, {}
+                for tok in left.split(","):
+                    tok = tok.strip()
+                    if "=" in tok:
+                        k, v = tok.split("=", 1)
+                        inputs[k.strip() or "n"] = v.strip()
+                if "n" not in inputs and left.strip():
+                    inputs = {"n": left.strip()}
+                outputs = {"out": right.strip()}
+                if not inputs or not outputs["out"]:
+                    return None
+                return {"inputs": inputs, "outputs": outputs}
+            except Exception:
+                return None
+        inputs, outputs = {}, {}
+        for tok in left.split(","):
+            tok = tok.strip()
+            if "=" in tok:
+                k, v = tok.split("=", 1)
+                inputs[k.strip()] = v.strip()
+        outputs = {"label": right.strip()}
+        return {"inputs": inputs, "outputs": outputs} if inputs and outputs["label"] else None
+
+    def _rule_answer(self, line: str) -> list[str]:
+        st = self.pending_rule
+        assert st is not None
+        if not line.strip():
+            return self._rule_next(st)
+        if st["stage"] == "examples":
+            row = self._parse_rule_line(line, st["domain"])
+            if row is None:
+                return ["格式不对,形如 n=5 => 11 或 颜色=红 => 苹果；空行下一步。"]
+            row["id"] = f"ex{len(st['examples'])}"
+            st["examples"].append(row)
+            return [f"正例+1(共{len(st['examples'])})。继续或空行下一步。"]
+        if st["stage"] == "negatives":
+            row = self._parse_rule_line(line, st["domain"])
+            if row is None:
+                return ["格式不对；空行下一步(可无反例)。"]
+            row["id"] = f"neg{len(st['negatives'])}"
+            st["negatives"].append(row)
+            return [f"反例+1(共{len(st['negatives'])})。继续或空行下一步。"]
+        if st["stage"] == "heldout":
+            if line.strip() == "跳过":
+                return self._rule_next(st, skip_heldout=True)
+            row = self._parse_rule_line(line, st["domain"])
+            if row is None:
+                return ["格式不对；至少给一个独立验证例,或输入'跳过'。"]
+            row["id"] = f"ho{len(st['heldout'])}"
+            st["heldout"].append(row)
+            return [f"验证例+1(共{len(st['heldout'])})。继续、空行诱导,或'跳过'。"]
+        self.pending_rule = None
+        return ["规则教学状态异常,已重置。"]
+
+    def _rule_next(self, st: dict, skip_heldout: bool = False) -> list[str]:
+        from . import rulelearn as RL
+        if st["stage"] == "examples":
+            if len(st["examples"]) < 2:
+                return ["正例至少2个,否则无法归纳。继续给,或'取消'。"]
+            st["stage"] = "negatives"
+            return ["正例已够。现在给反例(应被拒绝的输入),每行一个；可直接空行跳过。"]
+        if st["stage"] == "negatives":
+            st["stage"] = "heldout"
+            return ["反例阶段结束。现在给独立验证例(不能是上面的正例改写)；"
+                    "至少1个,或输入'跳过'(跳过则只能存候选,不能验证)。"]
+        # heldout -> induce
+        self.pending_rule = None
+        rep = RL.induce(st["examples"], st["negatives"], domain=st["domain"])
+        lines = [f"[rule_learn] 归纳完成: {len(rep['candidates'])} 候选" +
+                 ("(歧义:需反例或人工选择)" if rep["ambiguous"] else "")]
+        for i, c in enumerate(rep["candidates"]):
+            lines.append(f"  #{i} [{c['proposer']}] {c['form']}")
+        if not rep["candidates"]:
+            self.mem.add_experience(
+                "evaluation", f"rule induce {st['name']}: no candidate",
+                {"op": "rule_induce", "outcome": "rule"})
+            return lines + ["无一致候选(示例矛盾或超出DSL),已记录,未建规则。"]
+        rid = RL.new_rule_id(st["name"])
+        self.mem.save_rule(RL.make_proposal_record(
+            rid, st["name"], st["domain"], rep["candidates"],
+            evidence=[{"source": "chat"}]))
+        self.mem.add_experience(
+            "evaluation", f"rule proposal {rid}",
+            {"op": "rule_induce", "outcome": "rule",
+             "candidates": len(rep["candidates"]),
+             "ambiguous": rep["ambiguous"]})
+        lines.append(f"已存候选提案 {rid}(状态candidate,未验证)。")
+        if skip_heldout or not st["heldout"]:
+            lines.append("无独立验证例:停在候选。用rule-validate验证后才能晋升。")
+        else:
+            lines.append(f"验证例{len(st['heldout'])}个已收:用 rule-validate "
+                         f"{rid} --heldout <文件> 验证(示例需先导出成文件)。")
+        if rep["ambiguous"]:
+            lines.append(f"歧义未解:用 rule-select {rid} <编号> 选择后再验证。")
+        return lines
 
     def _fallback(self, line: str) -> list[str]:
         # try compositional parse before giving up; a parsed frame still

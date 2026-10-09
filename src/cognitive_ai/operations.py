@@ -118,9 +118,20 @@ class QueryAttribute(Operation):
 class ApplyRule(Operation):
     name = "apply_rule"
     # Only rules present in memory; trace cites rule id + facts.
+    # rule_id "*" tries every stored rule (used by the conceptual path).
 
     def execute(self, inputs, ctx):
         reasoner = ctx["reasoner"]
+        if inputs.get("rule_id") == "*":
+            out = []
+            for rule in ctx["memory"].query("SELECT id FROM rules ORDER BY id"):
+                hits = [f for f in reasoner.forward_chain()
+                        if f.get("rule") == rule["id"]
+                        and "conclusion" in f]
+                out.extend(hits)
+            if not out:
+                raise OpError("no stored rule fired")
+            return {"fired": out}
         fired = reasoner.forward_chain()
         hits = [f for f in fired if f.get("rule") == inputs["rule_id"]]
         if not hits:
@@ -260,7 +271,6 @@ class CheckResult(Operation):
 
 class RaiseGap(Operation):
     name = "raise_gap"
-
     def execute(self, inputs, ctx):
         mem = ctx["memory"]
         qid = mem.add_question(inputs["question"], inputs.get("kind", "gap"),
@@ -285,6 +295,80 @@ class Replan(Operation):
         return {"new_plan": alts[0]}
 
 
+class RetrieveRules(Operation):
+    name = "retrieve_rules"
+    origin = "induced_rule"
+
+    def execute(self, inputs, ctx):
+        mem = ctx["memory"]
+        rules = mem.list_rules_learned(status="active",
+                                       domain=inputs.get("domain"))
+        return {"rules": [{"id": r["id"], "name": r["name"],
+                           "domain": r["domain"],
+                           "version": r["version"]} for r in rules]}
+
+
+class ApplyLearnedRule(Operation):
+    name = "apply_learned"
+    origin = "induced_rule"
+    # Runs ACTIVE LearnableRules through the restricted interpreter
+    # (never eval, never codegen). Supports single rule_id, domain-wide
+    # attempt, or an explicit chain [ids] threading outputs into inputs.
+    # Every application bumps the rule's invocation counters.
+
+    def execute(self, inputs, ctx):
+        from . import rulelearn as RL
+        mem = ctx["memory"]
+        chain = inputs.get("chain") or \
+            ([inputs["rule_id"]] if inputs.get("rule_id") else None)
+        if chain is None:
+            chain = [r["id"] for r in mem.list_rules_learned(
+                status="active", domain=inputs.get("domain"))]
+        data = dict(inputs.get("inputs", {}))
+        applied = []
+        for rid in chain:
+            row = mem.get_rule(rid)
+            if row is None or row["status"] != "active":
+                continue
+            try:
+                spec = RL.selected_spec(row)
+            except RL.Unsupported:
+                continue  # unselected ambiguous rule: never auto-run
+            # chain threading convention: a single-input rule consumes the
+            # previous rule's output (_prev); multi-slot rules keep the
+            # original inputs. Recorded in the trace either way.
+            slots = spec.get("inputs", {})
+            if "_prev" in data and isinstance(slots, dict) \
+                    and len(slots) == 1:
+                slot = next(iter(slots))
+                data = {**data, slot: data["_prev"]}
+            res = RL.apply_spec(spec, data,
+                                ctx.get("ontology"))
+            row["calls"] = row.get("calls", 0) + 1
+            if res["status"] == "ok":
+                row["successes"] = row.get("successes", 0) + 1
+                applied.append({"rule_id": rid, "version": row["version"],
+                                "output": res["output"], "trace": res["trace"]})
+                mem.save_rule(row)
+                if isinstance(res["output"], dict):
+                    data.update({k: v for k, v in res["output"].items()
+                                 if v is not None})
+                else:
+                    data["_prev"] = res["output"]
+            else:
+                row["failures"] = row.get("failures", 0) + 1
+                mem.save_rule(row)
+        if not applied:
+            raise OpError("no active learned rule applied")
+        return {"applied": applied, "final": data}
+
+    def validate(self, inputs, outputs, ctx):
+        ok = bool(outputs.get("applied"))
+        return ok, f"{len(outputs.get('applied', []))} rule(s) applied" \
+            if ok else "nothing applied"
+
+
 REGISTRY = {c.name: c for c in (
     RetrieveConcepts, QueryAttribute, ApplyRule, CompareExplanations,
-    Compute, UpdateWorkingMemory, CheckResult, RaiseGap, Replan)}
+    Compute, UpdateWorkingMemory, CheckResult, RaiseGap, Replan,
+    RetrieveRules, ApplyLearnedRule)}

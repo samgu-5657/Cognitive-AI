@@ -64,6 +64,12 @@
   禁 eval、无外部求解器）/`executor.py`（执行循环+轨迹持久化+失败转缺口，
   核心操作不可摘除、空源检查必败）/`explainer.py`（只转述轨迹，
   未验证不出确定结论）。
+- 4D 规则学习：`rulelearn.py`（LearnableRule 结构化表示+受限 DSL 解释器
+  +affine/modular/合取归纳+独立验证+版本晋升/回滚；歧义候选必须人工选择，
+  永不自动拍板）/`operations.ApplyLearnedRule`（origin=induced_rule，
+  链式组合+调用计数）/执行器已实际调用 learned 规则与 seed 规则
+  （`apply_rule(*)` 接入概念主流程）/ `学规则`+`rule-induce/validate/
+  select/list/show/rollback` 命令。
 - `cli.py`: 薄命令行封装，不放核心逻辑。
 
 ## 3. 数据与持久化

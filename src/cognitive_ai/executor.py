@@ -70,6 +70,18 @@ def solve_text(text: str, frame: dict, memory, ontology, reasoner,
 def _make_plan(task: CognitiveTask) -> list[dict]:
     if task.task_type == "math":
         g = task.goal
+        if g.get("kind") == "transform":
+            # composed learned-rule task (structured goals only; the NL
+            # layer never invents chains)
+            return [
+                {"op": "apply_learned",
+                 "inputs": {"domain": g.get("domain", "math"),
+                            "chain": g.get("chain"),
+                            "inputs": g.get("inputs", {})}},
+                {"op": "check_result",
+                 "inputs": {"check": {"kind": "nonempty",
+                                      "value": "__applied__"}}},
+            ]
         return [
             {"op": "compute",
              "inputs": {"kind": g["kind"], "expression": g["expression"],
@@ -112,6 +124,11 @@ def _make_plan(task: CognitiveTask) -> list[dict]:
         plan.append({"op": "retrieve_concepts", "inputs": {"terms": ents}})
         plan.append({"op": "query_attribute",
                      "inputs": {"concept": "__each__", "key": "__ask__"}})
+        plan.append({"op": "apply_rule",
+                     "inputs": {"rule_id": "*"}, "optional": True})
+        plan.append({"op": "apply_learned",
+                     "inputs": {"domain": "concepts", "from_attrs": True},
+                     "optional": True})
     plan.append({"op": "check_result",
                  "inputs": {"check": {"kind": "kb_source",
                                       "sources": ents}}})
@@ -123,7 +140,7 @@ def _alt_plan(task, plan, failed_op):
     # query / check / rule application) define the task: dropping them
     # would "succeed" vacuously instead of reporting the real gap.
     if failed_op in ("compute", "query_attribute", "check_result",
-                     "apply_rule"):
+                     "apply_rule", "apply_learned"):
         return None  # honest dead-end -> gap, never forced success
     return [step for step in plan if step.get("op") != failed_op] or None
 
@@ -156,6 +173,19 @@ def _run_plan(task, plan, ctx, trace) -> bool:
             if not _run_attr_queries(task, ctx, trace):
                 return False
             continue
+        if step["op"] == "apply_learned" and inputs.get("from_attrs"):
+            # feed retrieved attribute values as rule input slots
+            slots: dict = {}
+            for s in trace["steps"]:
+                if s.get("op") == "query_attribute" and \
+                        s.get("status") != "failed":
+                    inp = s.get("inputs", {}) or {}
+                    out = s.get("outputs", {}) or {}
+                    if inp.get("concept"):
+                        slots["concept"] = inp["concept"]
+                    if inp.get("key") and out.get("value") is not None:
+                        slots[inp["key"]] = out["value"]
+            inputs = {"domain": inputs.get("domain"), "inputs": slots}
         if step["op"] == "check_result" and inputs.get("from") == "compute":
             if computed is None or computed["status"] != "verified":
                 trace["steps"].append(
@@ -167,21 +197,41 @@ def _run_plan(task, plan, ctx, trace) -> bool:
                  "note": "verified compute accepted", "inputs": inputs,
                  "outputs": {"ok": True}})
             continue
+        if step["op"] == "check_result" and isinstance(
+                inputs.get("check"), dict) and \
+                inputs["check"].get("value") == "__applied__":
+            # resolve against the preceding apply_learned record: a vacuous
+            # placeholder must never pass the check by itself
+            applied = []
+            for s in reversed(trace["steps"]):
+                if s.get("op") == "apply_learned" and \
+                        s.get("status") == "verified":
+                    applied = s.get("outputs", {}).get("applied", [])
+                    break
+            inputs = {"check": {"kind": "nonempty", "value": applied}}
         rec = op_cls().run(inputs, ctx)
         trace["steps"].append(rec)
         if step["op"] == "compute":
             computed = rec
         if rec["status"] in ("failed", "precondition_failed"):
+            if step.get("optional"):
+                # optional rule-application steps may miss without killing
+                # the task; the miss itself stays in the trace
+                continue
             return False
         if rec["status"] == "unverified" and step["op"] != "check_result":
             # unverified intermediate: keep going only for retrieval steps
             if step["op"] not in ("retrieve_concepts", "query_attribute",
                                   "apply_rule", "compare_explanations"):
                 return False
-    # task-level acceptance: math needs a verified compute; conceptual and
-    # logic need their check_result steps verified
+    # task-level acceptance: math-compute needs a verified compute;
+    # transform plans accept on verified checks; conceptual and logic
+    # need their check_result steps verified
     finals = [s for s in trace["steps"] if s["op"] == "check_result"]
     if task.task_type == "math":
+        if task.goal.get("kind") == "transform":
+            return bool(finals) and all(
+                s["status"] == "verified" for s in finals)
         return computed is not None and computed["status"] == "verified"
     if finals:
         return all(s["status"] == "verified" for s in finals)
