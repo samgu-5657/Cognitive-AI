@@ -277,6 +277,149 @@ def cmd_neural_compare(a):
             print(f"[{tag}] unavailable: {e}")
 
 
+def _queue_path():
+    return os.path.join(DATA, "neural", "queue", "unknown.jsonl")
+
+
+def cmd_neural_queue(a):
+    from cognitive_ai.neural.queue import UnknownQueue
+    q = UnknownQueue(_queue_path())
+    rows = q.list(status=a.status, limit=a.limit)
+    for r in rows:
+        print(f"[{r['sample_id']}] {r['text']!r} pred={r['l1_pred']}/"
+              f"{r['l2_pred']} conf={r['confidence']} reason={r['reason']} "
+              f"review={r['review']['status']} dup_of={r['dup_of']} "
+              f"label={r['label']}")
+    print(f"-- shown={len(rows)} --")
+
+
+def cmd_neural_queue_show(a):
+    from cognitive_ai.neural.queue import UnknownQueue
+    print(json.dumps(UnknownQueue(_queue_path()).get(a.sample_id),
+                     ensure_ascii=False, indent=2, default=str))
+
+
+def cmd_neural_review(a):
+    from cognitive_ai.neural.queue import UnknownQueue
+    q = UnknownQueue(_queue_path())
+    out = q.review(a.sample_id, accept=a.accept, l1=a.l1, l2=a.l2,
+                   reviewer=a.reviewer)
+    print(json.dumps(out, ensure_ascii=False, indent=2))
+    if out.get("ok"):
+        mem = get_memory()
+        mem.add_experience("evaluation",
+                           f"reviewed {a.sample_id}: {out['status']}",
+                           {"sample_id": a.sample_id, **out})
+        mem.close()
+
+
+def cmd_neural_queue_dedup(_a):
+    from cognitive_ai.neural.queue import UnknownQueue
+    print(json.dumps(UnknownQueue(_queue_path()).merge_duplicates(),
+                     ensure_ascii=False, indent=2))
+
+
+def cmd_neural_queue_export(a):
+    import os
+    from cognitive_ai.neural.queue import UnknownQueue
+    q = UnknownQueue(_queue_path())
+    rows = [{"id": r["sample_id"], "group": f"rev-{r['sample_id']}",
+             "text": r["text"], "level1": r["label"]["l1"],
+             "level2": r["label"]["l2"], "source": "reviewed"}
+            for r in q.accepted()]
+    os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)
+    with open(a.out, "w", encoding="utf-8") as fh:
+        for r in rows:
+            fh.write(json.dumps(r, ensure_ascii=False) + "\n")
+    print(json.dumps({"ok": True, "exported": len(rows), "file": a.out}))
+
+
+def cmd_neural_incremental(a):
+    from cognitive_ai.neural.dataset import load_jsonl
+    from cognitive_ai.neural.queue import UnknownQueue
+    from cognitive_ai.neural.trainer import incremental_train
+    q = UnknownQueue(a.queue if a.queue else _queue_path())
+    accepted = q.accepted()
+    new_rows = [{"id": r["sample_id"], "group": f"rev-{r['sample_id']}",
+                 "text": r["text"], "level1": r["label"]["l1"],
+                 "level2": r["label"]["l2"], "source": "reviewed"}
+                for r in accepted]
+    if not new_rows:
+        print(json.dumps({"ok": False, "error": "no accepted samples"}))
+        return
+    base = os.path.join(ROOT, "models", a.base)
+    replay = [r for r in load_jsonl(a.train) if r.get("level1")]
+    out = incremental_train(os.path.join(base, "best.pt"),
+                            os.path.join(base, "vocab.json"),
+                            new_rows, replay,
+                            os.path.join(ROOT, "models", a.out),
+                            epochs=a.epochs, seed=a.seed,
+                            replay_ratio=a.replay_ratio)
+    print(json.dumps(out, ensure_ascii=False, indent=2, default=str))
+
+
+def cmd_neural_gate(a):
+    from cognitive_ai.neural.dataset import load_jsonl
+    from cognitive_ai.neural.gate import (PromotionPolicy, decide,
+                                          evaluate_pair, promote)
+    reg = [r for r in load_jsonl(a.regression) if r.get("level1")]
+    new = [r for r in load_jsonl(a.new) if r.get("level1")] if a.new else []
+    root = os.path.join(ROOT, "models")
+    pair = evaluate_pair(os.path.join(root, a.base),
+                         os.path.join(root, a.candidate), reg, new)
+    dec = decide(pair, PromotionPolicy(
+        regression_tolerance=a.tolerance, min_new_samples=a.min_new))
+    print(json.dumps({"decision": dec, "delta": pair["delta_regression"],
+                      "base_acc": pair["base"]["regression"]["accuracy_l1"],
+                      "cand_acc": pair["candidate"]["regression"]["accuracy_l1"],
+                      "new_acc": pair["candidate"]["new_acc"]},
+                     ensure_ascii=False, indent=2))
+    if a.promote and dec["promote"]:
+        print(json.dumps(promote(root, a.candidate, pair, dec,
+                                 data_version=a.data_version),
+                         ensure_ascii=False, indent=2))
+    elif a.promote:
+        print(json.dumps({"promoted": False, "reason": dec["reason"]}))
+
+
+def cmd_neural_active(_a):
+    from cognitive_ai.neural.gate import read_active
+    print(json.dumps(read_active(os.path.join(ROOT, "models")),
+                     ensure_ascii=False, indent=2))
+
+
+def cmd_neural_rollback(_a):
+    from cognitive_ai.neural.gate import rollback_active
+    print(json.dumps(rollback_active(os.path.join(ROOT, "models")),
+                     ensure_ascii=False, indent=2))
+
+
+def cmd_neural_cycle(a):
+    from cognitive_ai.neural.adapter import NeuralAdapter
+    from cognitive_ai.neural.cycle import cycle_predict, maybe_train
+    from cognitive_ai.neural.gate import read_active
+    from cognitive_ai.neural.queue import UnknownQueue
+    root = os.path.join(ROOT, "models")
+    act = read_active(root) or {"tag": "cnn-v1"}
+    tag = act["tag"]
+    ad = NeuralAdapter(os.path.join(root, tag, "best.pt"),
+                       os.path.join(root, tag, "vocab.json"))
+    mem = get_memory()
+    q = UnknownQueue(_queue_path())
+    out = cycle_predict(ad, q, mem, a.text, source="cli-cycle")
+    print(json.dumps(out, ensure_ascii=False, indent=2, default=str))
+    if a.train:
+        res = maybe_train(
+            mem, tag, root, _queue_path(),
+            os.path.join(DATA, "neural", "train.jsonl"),
+            a.out_tag, batch_min=a.batch_min, epochs=a.epochs,
+            max_train_seconds=a.budget)
+        print(json.dumps({k: v for k, v in res.items()
+                          if k not in ("pair",)}, ensure_ascii=False,
+                         indent=2, default=str))
+    mem.close()
+
+
 def cmd_doctor(_a):
     mem = get_memory()
     onto = Ontology(mem)
@@ -342,6 +485,37 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(fn=cmd_neural_predict)
     s = sub.add_parser("neural-compare"); s.add_argument("--tags", default="cnn-v1,gru-v1")
     s.set_defaults(fn=cmd_neural_compare)
+    s = sub.add_parser("neural-queue"); s.add_argument("--status", default=None)
+    s.add_argument("--limit", type=int, default=50); s.set_defaults(fn=cmd_neural_queue)
+    s = sub.add_parser("neural-queue-show"); s.add_argument("sample_id")
+    s.set_defaults(fn=cmd_neural_queue_show)
+    s = sub.add_parser("neural-review"); s.add_argument("sample_id")
+    s.add_argument("--l1", default=None); s.add_argument("--l2", default=None)
+    s.add_argument("--accept", action="store_true"); s.add_argument("--reviewer", default="operator")
+    s.set_defaults(fn=cmd_neural_review)
+    sub.add_parser("neural-queue-dedup").set_defaults(fn=cmd_neural_queue_dedup)
+    s = sub.add_parser("neural-queue-export"); s.add_argument("--out", required=True)
+    s.set_defaults(fn=cmd_neural_queue_export)
+    s = sub.add_parser("neural-incremental"); s.add_argument("--base", default="cnn-v1")
+    s.add_argument("--out", required=True); s.add_argument("--queue", default=None)
+    s.add_argument("--train", default=os.path.join(DATA, "neural", "train.jsonl"))
+    s.add_argument("--epochs", type=int, default=30); s.add_argument("--seed", type=int, default=11)
+    s.add_argument("--replay-ratio", type=float, default=2.0)
+    s.set_defaults(fn=cmd_neural_incremental)
+    s = sub.add_parser("neural-gate"); s.add_argument("--base", default="cnn-v1")
+    s.add_argument("--candidate", required=True)
+    s.add_argument("--regression", default=os.path.join(DATA, "neural", "val.jsonl"))
+    s.add_argument("--new", default=None); s.add_argument("--tolerance", type=float, default=0.02)
+    s.add_argument("--min-new", type=int, default=5); s.add_argument("--promote", action="store_true")
+    s.add_argument("--data-version", default="reviewed+replay")
+    s.set_defaults(fn=cmd_neural_gate)
+    sub.add_parser("neural-active").set_defaults(fn=cmd_neural_active)
+    sub.add_parser("neural-rollback").set_defaults(fn=cmd_neural_rollback)
+    s = sub.add_parser("neural-cycle"); s.add_argument("text")
+    s.add_argument("--train", action="store_true"); s.add_argument("--out-tag", default="cnn-cand")
+    s.add_argument("--batch-min", type=int, default=5); s.add_argument("--epochs", type=int, default=30)
+    s.add_argument("--budget", type=float, default=600.0)
+    s.set_defaults(fn=cmd_neural_cycle)
     sub.add_parser("doctor").set_defaults(fn=cmd_doctor)
     return p
 

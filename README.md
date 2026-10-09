@@ -174,6 +174,31 @@ CNN 的价值在于校准的弃权（0.75）而非精度；L2 尚弱。
 能力边界：数百汉字词汇、短句、人工分布；未见词多靠共享单字猜测，
 常过度自信；不得称为通用中文理解。
 
+## 持续学习（Phase 3B：门禁式模型更新，CPU 可运行）
+
+未知输入→隔离队列→人工审核→增量训练（新样本+旧回放）→冻结回归门禁→
+指针切换（active.json），失败保留现状、可回滚。`models/` 不入库。
+
+```powershell
+py -m cognitive_ai.cli neural-cycle 激光打印机
+py -m cognitive_ai.cli neural-queue --status pending
+py -m cognitive_ai.cli neural-review <id> --l1 entity --l2 electronics --accept
+py -m cognitive_ai.cli neural-incremental --base cnn-v1 --out cnn-cand1 --epochs 30
+py -m cognitive_ai.cli neural-queue-export --out reviewed.jsonl
+py -m cognitive_ai.cli neural-gate --base cnn-v1 --candidate cnn-cand1 --new reviewed.jsonl --promote
+py -m cognitive_ai.cli neural-active
+py -m cognitive_ai.cli neural-rollback
+pytest tests/test_neural_3b.py tests/test_neural_transfer3b.py tests/test_neural_continual.py -q
+```
+
+真实运行（5 个审核新词 + 10 条回放，30/100 epoch 两候选）：
+门禁均**拒绝晋升**——回归 0.574→0.463/0.444（超 0.02 容忍度），
+新词准确率仅 0.2/0.6。活动模型保持 `cnn-v1`。
+结论：小批量回放不足以在吸收新词的同时保住旧知识，门禁按设计拦下；
+对照实验（全量回放）显示 replay 版旧知识保持 0.917 优于纯新样本版 0.75。
+A/B/C/D 小实验：A(冻)新0.33/旧0.58，B(新)C(新+回放)D(重训)新词皆0.67，
+旧知识 C 0.917 > D 0.833 > B 0.75——回放有效，但样本量小，属初步信号。
+
 ## 下一阶段计划
 
 1. 更严格的研究证据门槛：同一结论需两个独立来源才进入知识库。

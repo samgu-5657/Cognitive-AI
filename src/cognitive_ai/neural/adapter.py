@@ -21,7 +21,9 @@ L1_TO_KIND = {"entity": "Entity", "event": "Event", "action": "Action",
 
 def to_candidate(text: str, l1_probs: list[float], l2_probs: list[float],
                  model_version: str,
-                 threshold: float = UNKNOWN_THRESHOLD) -> dict:
+                 threshold: float = UNKNOWN_THRESHOLD,
+                 l2_names: list[str] | None = None) -> dict:
+    l2_names = l2_names or LEVEL2
     best1 = int(max(range(len(l1_probs)), key=lambda i: l1_probs[i]))
     best2 = int(max(range(len(l2_probs)), key=lambda i: l2_probs[i]))
     conf = float(l1_probs[best1])
@@ -33,7 +35,7 @@ def to_candidate(text: str, l1_probs: list[float], l2_probs: list[float],
     return {"concept_type": L1_TO_KIND[LEVEL1[best1]],
             "candidate_category": LEVEL1[best1],
             "confidence": round(conf, 4), "model_version": model_version,
-            "verdict": "known", "level2": LEVEL2[best2],
+            "verdict": "known", "level2": l2_names[best2],
             "level2_confidence": round(float(l2_probs[best2]), 4),
             "input": text}
 
@@ -48,6 +50,7 @@ class NeuralAdapter:
         self._checkpoint = checkpoint
         self.model, self.vocab, ck = load_model(checkpoint, vocab_path)
         self.threshold = threshold
+        self.l2_names = ck.get("level2", LEVEL2)
         tag = os.path.basename(os.path.dirname(os.path.abspath(checkpoint)))
         self._version = (f"{ck.get('kind', '?')}-seed{ck.get('seed', '?')}@{tag}")
 
@@ -58,7 +61,8 @@ class NeuralAdapter:
     def predict(self, text: str) -> dict:
         from .evaluator import predict_probs
         p1, p2 = predict_probs(self.model, self.vocab, [text])
-        return to_candidate(text, p1[0], p2[0], self.version, self.threshold)
+        return to_candidate(text, p1[0], p2[0], self.version, self.threshold,
+                            self.l2_names)
 
     def submit(self, memory, candidate: dict) -> dict:
         """Gated submission: candidate Claim + evidence only. Read the

@@ -42,7 +42,9 @@
 - `neural/`: Phase 3A 概念识别网（`vocabulary/dataset/model/
   trainer/evaluator/adapter/continual`，字符嵌入即编码器）。torch 延迟导入、可选依赖；
   规则模块禁止 import torch。输出恒为 candidate，经现有门禁才能入库；
-  在线权重更新留给 3B（`continual.py` 只有存储与门禁，无自动更新）。
+  3B 增加 `queue/gate/cycle`：未知隔离队列（预测永不自动成标签）、
+  增量训练（审核样本+回放，L1 封闭/L2 可扩展）、冻结回归门禁与 active 指针
+  （只换指针不覆盖，失败保留、可回滚）。无在线自动更新。
 - `cli.py`: 薄命令行封装，不放核心逻辑。
 
 ## 3. 数据与持久化
