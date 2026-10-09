@@ -1,0 +1,47 @@
+{
+  "concepts": [
+    {"id": "entity", "name": "实体", "kind": "Entity", "parents": []},
+    {"id": "event", "name": "事件", "kind": "Event", "parents": []},
+    {"id": "action", "name": "动作", "kind": "Action", "parents": []},
+    {"id": "attribute", "name": "属性", "kind": "Attribute", "parents": []},
+    {"id": "abstract", "name": "抽象概念", "kind": "AbstractConcept", "parents": []},
+    {"id": "object", "name": "物体", "kind": "Entity", "parents": ["entity"]},
+    {"id": "artifact", "name": "人造物品", "kind": "Entity", "parents": ["object"]},
+    {"id": "container", "name": "容器", "kind": "Entity", "parents": ["artifact"]},
+    {"id": "drinkware", "name": "饮用器具", "kind": "Entity", "parents": ["artifact"]},
+    {"id": "cup", "name": "杯子", "kind": "Entity", "parents": ["container", "drinkware", "object", "artifact", "entity"]},
+    {"id": "vessel", "name": "器皿", "kind": "Entity", "parents": ["container"]},
+    {"id": "bowl", "name": "碗", "kind": "Entity", "parents": ["vessel"]},
+    {"id": "bottle", "name": "瓶子", "kind": "Entity", "parents": ["vessel"]}
+  ],
+  "attributes": [
+    {"concept": "container", "key": "can_contain", "value": true, "confidence": 0.95, "source": "seed", "status": "verified"},
+    {"concept": "drinkware", "key": "function", "value": "drinking", "confidence": 0.9, "source": "seed", "status": "verified"},
+    {"concept": "cup", "key": "material", "value": "ceramic", "confidence": 0.8, "source": "seed", "status": "verified"},
+    {"concept": "cup", "key": "function", "value": "drinking", "confidence": 0.9, "source": "seed", "status": "verified"},
+    {"concept": "cup", "key": "has_handle", "value": true, "confidence": 0.7, "source": "seed", "status": "hypothesis"},
+    {"concept": "bowl", "key": "material", "value": "ceramic", "confidence": 0.7, "source": "seed", "status": "hypothesis"},
+    {"concept": "bottle", "key": "has_lid", "value": true, "confidence": 0.7, "source": "seed", "status": "hypothesis"}
+  ],
+  "relations": [
+    {"src": "cup", "rel_type": "used_for", "dst": "drinkware", "confidence": 0.9, "source": "seed", "status": "verified"}
+  ],
+  "rules": [
+    {
+      "id": "containers_hold_things",
+      "name": "容器可以容纳物品",
+      "conditions": [{"type": "is_a", "concept": "cup", "ancestor": "container"}],
+      "conclusion": {"type": "has_attr", "concept": "cup", "key": "can_contain", "value": true},
+      "exceptions": [{"type": "has_attr", "concept": "cup", "key": "is_broken", "value": true}],
+      "source": "seed"
+    },
+    {
+      "id": "drinkware_used_for_drinking",
+      "name": "饮用器具用于饮用",
+      "conditions": [{"type": "is_a", "concept": "cup", "ancestor": "drinkware"}],
+      "conclusion": {"type": "relation", "src": "cup", "rel_type": "used_for", "dst": "drinkware"},
+      "exceptions": [],
+      "source": "seed"
+    }
+  ]
+}

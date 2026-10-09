@@ -1,0 +1,9 @@
+器皿 (vessel) 是容器的下位类别，包括碗和瓶子。
+
+vessel 的用途是盛放物品。bowl 用来盛饭，bottle 用来盛水。
+material: bowl 的 material 是 ceramic；bottle 的 material 是 glass。
+function: vessel 的 function 是 holding。
+location: kitchen。
+
+区分证据：bowl 是开口宽的器皿，bottle 是有盖的细口器皿 (has_lid: true)。
+has_handle 只出现在 cup 上，不出现在 bowl 或 bottle 上。

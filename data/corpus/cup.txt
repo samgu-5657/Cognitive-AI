@@ -1,0 +1,9 @@
+杯子是一种常见的饮用器具，属于容器和人造物品。
+
+material: ceramic
+function: drinking
+location: kitchen
+can_contain: true
+
+杯子通常有把手，可以容纳液体，用于饮用。杯子的主要功能是 drinking。
+相关概念：容器 (container)、饮用器具 (drinkware)、器皿 (vessel)。

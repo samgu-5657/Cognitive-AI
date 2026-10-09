@@ -1,0 +1,9 @@
+# user data + caches are never committed
+data/*.db
+data/*.db-*
+__pycache__/
+*.pyc
+.pytest_cache/
+.hypothesis/
+src/*.egg-info/
+.eggs/
