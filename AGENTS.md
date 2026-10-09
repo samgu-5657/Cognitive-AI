@@ -39,6 +39,10 @@
   自主管线最高只能写 hypothesis；supported/verified 必须显式 promote。
 - `learner.py` / `loop.py`: 学习循环与预算控制。`Learner` 支持
   `enable_structural=False`（纯事实系统 B）；`consolidate()` 为验证式结构学习。
+- `neural/`: Phase 3A 概念识别网（`vocabulary/dataset/model/
+  trainer/evaluator/adapter/continual`，字符嵌入即编码器）。torch 延迟导入、可选依赖；
+  规则模块禁止 import torch。输出恒为 candidate，经现有门禁才能入库；
+  在线权重更新留给 3B（`continual.py` 只有存储与门禁，无自动更新）。
 - `cli.py`: 薄命令行封装，不放核心逻辑。
 
 ## 3. 数据与持久化
@@ -103,7 +107,10 @@ pytest -q
 - 仅接口：标记为 Interface-only，并说明缺什么。
 - 计划中：标记为 Planned，不创建空逻辑模块充数。
 
-## 8. 神经网络 (未来)
+## 8. 神经网络 (Phase 3A 起为现状，未来引入时指 3B+)
 
-- 未来引入 NN 时：从随机初始化开始，单独评估学习与持续更新能力，
-  不得复用预训练权重冒充持续学习成果，需新增独立测试。
+- 必须从随机初始化开始，不得复用预训练权重冒充持续学习成果。
+- 输出恒为候选判断，经证据/生命周期门禁才能入库；不得直写 verified。
+- 训练/验证/测试按语义组隔离，训练前必须过泄漏检查。
+- 权重目录 `models/` 不入库；数据版本与评测结果保留。
+- 如实报告与规则基线的比较，差即是差。

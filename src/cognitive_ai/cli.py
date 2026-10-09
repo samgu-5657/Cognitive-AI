@@ -191,6 +191,92 @@ def cmd_promote(a):
     mem.close()
 
 
+def _neural_paths(a):
+    root = os.path.join(ROOT, "models", getattr(a, "tag", "cnn-v1"))
+    return root
+
+
+def cmd_neural_train(a):
+    from cognitive_ai.neural.dataset import check_no_leakage, load_jsonl
+    from cognitive_ai.neural.trainer import train_model
+    data = os.path.join(DATA, "neural")
+    tr = load_jsonl(os.path.join(data, "train.jsonl"))
+    va = load_jsonl(os.path.join(data, "val.jsonl"))
+    te = load_jsonl(os.path.join(data, "test.jsonl"))
+    leak = check_no_leakage(tr, va, te)
+    print(json.dumps({"leakage_check": leak}, ensure_ascii=False, indent=2))
+    if not leak["ok"]:
+        raise SystemExit("data leakage detected; refusing to train")
+    out = train_model(tr, va, _neural_paths(a), kind=a.model,
+                      seed=a.seed, epochs=a.epochs, batch=a.batch,
+                      dropout=a.dropout, l2_weight=a.l2_weight,
+                      weight_decay=a.weight_decay, emb_dim=a.emb,
+                      filters=a.filters)
+    print(json.dumps({k: v for k, v in out.items() if k != "history"},
+                     ensure_ascii=False, indent=2))
+    mem = get_memory()
+    mem.add_experience("evaluation",
+                       f"neural train {a.model} seed={a.seed}: "
+                       f"best val_acc={out['best']['val_acc']} "
+                       f"@epoch {out['best']['epoch']}",
+                       {"out_dir": out["out_dir"], "best": out["best"]})
+    mem.close()
+
+
+def cmd_neural_eval(a):
+    from cognitive_ai.neural.adapter import NeuralAdapter
+    from cognitive_ai.neural.dataset import load_jsonl
+    from cognitive_ai.neural.evaluator import evaluate
+    data = os.path.join(DATA, "neural")
+    te = load_jsonl(os.path.join(data, "test.jsonl"))
+    root = _neural_paths(a)
+    ad = NeuralAdapter(os.path.join(root, "best.pt"),
+                       os.path.join(root, "vocab.json"))
+    rep = evaluate(ad.model, ad.vocab, te)
+    print(json.dumps(rep, ensure_ascii=False, indent=2))
+    mem = get_memory()
+    mem.add_experience("evaluation",
+                       f"neural eval {ad.version}: "
+                       f"acc_l1={rep['accuracy_l1']} "
+                       f"baseline={rep['baseline_accuracy_l1']} "
+                       f"reject={rep['unknown_rejection_rate']}",
+                       {"report": rep, "model_version": ad.version})
+    mem.close()
+
+
+def cmd_neural_predict(a):
+    from cognitive_ai.neural.adapter import NeuralAdapter
+    root = _neural_paths(a)
+    ad = NeuralAdapter(os.path.join(root, "best.pt"),
+                       os.path.join(root, "vocab.json"))
+    out = ad.predict(a.text)
+    print(json.dumps(out, ensure_ascii=False, indent=2))
+    if a.submit:
+        mem = get_memory()
+        print(json.dumps(ad.submit(mem, out), ensure_ascii=False, indent=2))
+        mem.close()
+
+
+def cmd_neural_compare(a):
+    from cognitive_ai.neural.adapter import NeuralAdapter
+    from cognitive_ai.neural.dataset import load_jsonl
+    from cognitive_ai.neural.evaluator import evaluate
+    data = os.path.join(DATA, "neural")
+    te = load_jsonl(os.path.join(data, "test.jsonl"))
+    for tag in a.tags.split(","):
+        root = os.path.join(ROOT, "models", tag.strip())
+        try:
+            ad = NeuralAdapter(os.path.join(root, "best.pt"),
+                               os.path.join(root, "vocab.json"))
+            rep = evaluate(ad.model, ad.vocab, te)
+            print(f"[{tag}] acc_l1={rep['accuracy_l1']} "
+                  f"acc_l2={rep['accuracy_l2']} "
+                  f"baseline={rep['baseline_accuracy_l1']} "
+                  f"reject={rep['unknown_rejection_rate']}")
+        except Exception as e:
+            print(f"[{tag}] unavailable: {e}")
+
+
 def cmd_doctor(_a):
     mem = get_memory()
     onto = Ontology(mem)
@@ -242,6 +328,20 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("to"); s.add_argument("--evidence", default="[]")
     s.add_argument("--confirmed-by", default=""); s.add_argument("--reason", default="")
     s.set_defaults(fn=cmd_promote)
+    s = sub.add_parser("neural-train"); s.add_argument("--model",
+        choices=["cnn", "gru"], default="cnn"); s.add_argument("--tag", default="cnn-v1")
+    s.add_argument("--seed", type=int, default=7); s.add_argument("--epochs", type=int, default=300)
+    s.add_argument("--batch", type=int, default=8); s.add_argument("--dropout", type=float, default=0.5)
+    s.add_argument("--l2-weight", type=float, default=0.2); s.add_argument("--weight-decay", type=float, default=1e-3)
+    s.add_argument("--emb", type=int, default=16); s.add_argument("--filters", type=int, default=16)
+    s.set_defaults(fn=cmd_neural_train)
+    s = sub.add_parser("neural-eval"); s.add_argument("--tag", default="cnn-v1")
+    s.set_defaults(fn=cmd_neural_eval)
+    s = sub.add_parser("neural-predict"); s.add_argument("text")
+    s.add_argument("--tag", default="cnn-v1"); s.add_argument("--submit", action="store_true")
+    s.set_defaults(fn=cmd_neural_predict)
+    s = sub.add_parser("neural-compare"); s.add_argument("--tags", default="cnn-v1,gru-v1")
+    s.set_defaults(fn=cmd_neural_compare)
     sub.add_parser("doctor").set_defaults(fn=cmd_doctor)
     return p
 

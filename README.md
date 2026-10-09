@@ -141,6 +141,39 @@ pytest tests/test_lifecycle.py tests/test_evidence_independence.py tests/test_mi
 额外获得子组 bonus——结构学习带来可验证的迁移增益，但基础分类无差异
 （诚实结论：小规模评测上动态结构不总是最优）。
 
+## 神经网络（Phase 3A：概念识别网，CPU 可运行）
+
+`src/cognitive_ai/neural/`：字符级 CNN（默认）与双向 GRU，随机初始化，
+无预训练权重、无外部词向量。torch 为可选依赖（`pip install -e ".[neural]"`），
+缺失时规则系统不受影响。
+
+```powershell
+py -m cognitive_ai.cli neural-train --model cnn --tag cnn-v1 --seed 7 --epochs 300
+py -m cognitive_ai.cli neural-eval --tag cnn-v1
+py -m cognitive_ai.cli neural-compare --tags cnn-v1,gru-v1
+py -m cognitive_ai.cli neural-predict 杯子 --tag cnn-v1
+pytest tests/test_neural.py tests/test_neural_continual.py -q
+```
+
+实测（`data/neural/` 手工种子数据：train 174 / val 54 / test 77，
+组级隔离零泄漏；权重在 `models/`，git 忽略）：
+
+| 模型 | val L1 | test L1 | test L2 | test 基线 | 未知拒绝率 |
+|---|---|---|---|---|---|
+| char-CNN | 0.574 | **0.420** | 0.261 | 0.435 | 0.75 |
+| char-GRU | 0.556 | 0.391 | 0.275 | 0.435 | 0.00 |
+
+诚实结论：小数据+测试词完全未见的设定下，CNN 与粗糙关键词基线
+基本打平（差 1 个样本），GRU 更差且过度自信（拒绝率 0）。
+CNN 的价值在于校准的弃权（0.75）而非精度；L2 尚弱。
+网络输出恒为 `candidate`，经证据+生命周期门后才能入库，
+`neural-predict --submit` 只建 Claim，不断言知识、不升版本。
+3B 预留：`continual.py`（未知日志/样本检疫/版本化并入/回放门禁），
+无在线权重更新。
+
+能力边界：数百汉字词汇、短句、人工分布；未见词多靠共享单字猜测，
+常过度自信；不得称为通用中文理解。
+
 ## 下一阶段计划
 
 1. 更严格的研究证据门槛：同一结论需两个独立来源才进入知识库。

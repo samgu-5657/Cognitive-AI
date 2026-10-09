@@ -1,6 +1,7 @@
 # user data + caches are never committed
 data/*.db
 data/*.db-*
+models/
 __pycache__/
 *.pyc
 .pytest_cache/

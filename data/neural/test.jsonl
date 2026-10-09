@@ -1,0 +1,77 @@
+{"group": "ent-scissors-01", "id": "ent-scissors-01-a", "level1": "entity", "level2": "tool", "source": "handcrafted-v1", "text": "剪刀"}
+{"group": "ent-scissors-01", "id": "ent-scissors-01-b", "level1": "entity", "level2": "tool", "source": "handcrafted-v1", "text": "一把剪刀"}
+{"group": "ent-scissors-01", "id": "ent-scissors-01-c", "level1": "entity", "level2": "tool", "source": "handcrafted-v1", "text": "剪子"}
+{"group": "ent-fan-01", "id": "ent-fan-01-a", "level1": "entity", "level2": "electronics", "source": "handcrafted-v1", "text": "风扇"}
+{"group": "ent-fan-01", "id": "ent-fan-01-b", "level1": "entity", "level2": "electronics", "source": "handcrafted-v1", "text": "一台电风扇"}
+{"group": "ent-fan-01", "id": "ent-fan-01-c", "level1": "entity", "level2": "electronics", "source": "handcrafted-v1", "text": "吊扇"}
+{"group": "ent-banana-01", "id": "ent-banana-01-a", "level1": "entity", "level2": "food", "source": "handcrafted-v1", "text": "香蕉"}
+{"group": "ent-banana-01", "id": "ent-banana-01-b", "level1": "entity", "level2": "food", "source": "handcrafted-v1", "text": "一根香蕉"}
+{"group": "ent-banana-01", "id": "ent-banana-01-c", "level1": "entity", "level2": "food", "source": "handcrafted-v1", "text": "黄香蕉"}
+{"group": "ent-sofa-01", "id": "ent-sofa-01-a", "level1": "entity", "level2": "furniture", "source": "handcrafted-v1", "text": "沙发"}
+{"group": "ent-sofa-01", "id": "ent-sofa-01-b", "level1": "entity", "level2": "furniture", "source": "handcrafted-v1", "text": "一张沙发"}
+{"group": "ent-sofa-01", "id": "ent-sofa-01-c", "level1": "entity", "level2": "furniture", "source": "handcrafted-v1", "text": "布沙发"}
+{"group": "ent-bike-01", "id": "ent-bike-01-a", "level1": "entity", "level2": "vehicle", "source": "handcrafted-v1", "text": "自行车"}
+{"group": "ent-bike-01", "id": "ent-bike-01-b", "level1": "entity", "level2": "vehicle", "source": "handcrafted-v1", "text": "一辆自行车"}
+{"group": "ent-bike-01", "id": "ent-bike-01-c", "level1": "entity", "level2": "vehicle", "source": "handcrafted-v1", "text": "单车"}
+{"group": "evt-hail-01", "id": "evt-hail-01-a", "level1": "event", "level2": "weather", "source": "handcrafted-v1", "text": "冰雹"}
+{"group": "evt-hail-01", "id": "evt-hail-01-b", "level1": "event", "level2": "weather", "source": "handcrafted-v1", "text": "下冰雹"}
+{"group": "evt-hail-01", "id": "evt-hail-01-c", "level1": "event", "level2": "weather", "source": "handcrafted-v1", "text": "降冰雹"}
+{"group": "evt-graduation-01", "id": "evt-graduation-01-a", "level1": "event", "level2": "social", "source": "handcrafted-v1", "text": "毕业典礼"}
+{"group": "evt-graduation-01", "id": "evt-graduation-01-b", "level1": "event", "level2": "social", "source": "handcrafted-v1", "text": "毕业"}
+{"group": "evt-graduation-01", "id": "evt-graduation-01-c", "level1": "event", "level2": "social", "source": "handcrafted-v1", "text": "举行毕业典礼"}
+{"group": "evt-landslide-01", "id": "evt-landslide-01-a", "level1": "event", "level2": "accident", "source": "handcrafted-v1", "text": "滑坡"}
+{"group": "evt-landslide-01", "id": "evt-landslide-01-b", "level1": "event", "level2": "accident", "source": "handcrafted-v1", "text": "山体滑坡"}
+{"group": "evt-landslide-01", "id": "evt-landslide-01-c", "level1": "event", "level2": "accident", "source": "handcrafted-v1", "text": "发生滑坡"}
+{"group": "act-dance-01", "id": "act-dance-01-a", "level1": "action", "level2": "motion", "source": "handcrafted-v1", "text": "跳舞"}
+{"group": "act-dance-01", "id": "act-dance-01-b", "level1": "action", "level2": "motion", "source": "handcrafted-v1", "text": "跳一支舞"}
+{"group": "act-dance-01", "id": "act-dance-01-c", "level1": "action", "level2": "motion", "source": "handcrafted-v1", "text": "舞蹈"}
+{"group": "act-lunch-01", "id": "act-lunch-01-a", "level1": "action", "level2": "eating", "source": "handcrafted-v1", "text": "吃午饭"}
+{"group": "act-lunch-01", "id": "act-lunch-01-b", "level1": "action", "level2": "eating", "source": "handcrafted-v1", "text": "吃午餐"}
+{"group": "act-lunch-01", "id": "act-lunch-01-c", "level1": "action", "level2": "eating", "source": "handcrafted-v1", "text": "用午餐"}
+{"group": "act-knit-01", "id": "act-knit-01-a", "level1": "action", "level2": "making", "source": "handcrafted-v1", "text": "织毛衣"}
+{"group": "act-knit-01", "id": "act-knit-01-b", "level1": "action", "level2": "making", "source": "handcrafted-v1", "text": "打毛衣"}
+{"group": "act-knit-01", "id": "act-knit-01-c", "level1": "action", "level2": "making", "source": "handcrafted-v1", "text": "编织"}
+{"group": "att-purple-01", "id": "att-purple-01-a", "level1": "attribute", "level2": "color", "source": "handcrafted-v1", "text": "紫色"}
+{"group": "att-purple-01", "id": "att-purple-01-b", "level1": "attribute", "level2": "color", "source": "handcrafted-v1", "text": "紫罗兰色"}
+{"group": "att-purple-01", "id": "att-purple-01-c", "level1": "attribute", "level2": "color", "source": "handcrafted-v1", "text": "淡紫"}
+{"group": "att-triangle-01", "id": "att-triangle-01-a", "level1": "attribute", "level2": "shape", "source": "handcrafted-v1", "text": "三角形"}
+{"group": "att-triangle-01", "id": "att-triangle-01-b", "level1": "attribute", "level2": "shape", "source": "handcrafted-v1", "text": "三角"}
+{"group": "att-triangle-01", "id": "att-triangle-01-c", "level1": "attribute", "level2": "shape", "source": "handcrafted-v1", "text": "呈三角"}
+{"group": "att-cool-01", "id": "att-cool-01-a", "level1": "attribute", "level2": "temperature", "source": "handcrafted-v1", "text": "凉爽"}
+{"group": "att-cool-01", "id": "att-cool-01-b", "level1": "attribute", "level2": "temperature", "source": "handcrafted-v1", "text": "凉快"}
+{"group": "att-cool-01", "id": "att-cool-01-c", "level1": "attribute", "level2": "temperature", "source": "handcrafted-v1", "text": "清凉"}
+{"group": "att-short-01", "id": "att-short-01-a", "level1": "attribute", "level2": "size", "source": "handcrafted-v1", "text": "矮小"}
+{"group": "att-short-01", "id": "att-short-01-b", "level1": "attribute", "level2": "size", "source": "handcrafted-v1", "text": "短小"}
+{"group": "att-short-01", "id": "att-short-01-c", "level1": "attribute", "level2": "size", "source": "handcrafted-v1", "text": "低矮"}
+{"group": "abs-lonely-01", "id": "abs-lonely-01-a", "level1": "abstract", "level2": "emotion", "source": "handcrafted-v1", "text": "孤独"}
+{"group": "abs-lonely-01", "id": "abs-lonely-01-b", "level1": "abstract", "level2": "emotion", "source": "handcrafted-v1", "text": "寂寞"}
+{"group": "abs-lonely-01", "id": "abs-lonely-01-c", "level1": "abstract", "level2": "emotion", "source": "handcrafted-v1", "text": "孤单"}
+{"group": "abs-biology-01", "id": "abs-biology-01-a", "level1": "abstract", "level2": "science", "source": "handcrafted-v1", "text": "生物学"}
+{"group": "abs-biology-01", "id": "abs-biology-01-b", "level1": "abstract", "level2": "science", "source": "handcrafted-v1", "text": "生物"}
+{"group": "abs-biology-01", "id": "abs-biology-01-c", "level1": "abstract", "level2": "science", "source": "handcrafted-v1", "text": "生态学"}
+{"group": "abs-future-01", "id": "abs-future-01-a", "level1": "abstract", "level2": "time", "source": "handcrafted-v1", "text": "未来"}
+{"group": "abs-future-01", "id": "abs-future-01-b", "level1": "abstract", "level2": "time", "source": "handcrafted-v1", "text": "将来"}
+{"group": "abs-future-01", "id": "abs-future-01-c", "level1": "abstract", "level2": "time", "source": "handcrafted-v1", "text": "明天"}
+{"group": "abs-morality-01", "id": "abs-morality-01-a", "level1": "abstract", "level2": "society", "source": "handcrafted-v1", "text": "道德"}
+{"group": "abs-morality-01", "id": "abs-morality-01-b", "level1": "abstract", "level2": "society", "source": "handcrafted-v1", "text": "品德"}
+{"group": "abs-morality-01", "id": "abs-morality-01-c", "level1": "abstract", "level2": "society", "source": "handcrafted-v1", "text": "德行"}
+{"group": "near-treadmill-01", "id": "near-treadmill-01-a", "level1": "entity", "level2": "tool", "source": "handcrafted-v1", "text": "跑步机", "note": "near-miss of action 跑步"}
+{"group": "near-treadmill-01", "id": "near-treadmill-01-b", "level1": "entity", "level2": "tool", "source": "handcrafted-v1", "text": "一台跑步机", "note": "near-miss of action 跑步"}
+{"group": "near-treadmill-01", "id": "near-treadmill-01-c", "level1": "entity", "level2": "tool", "source": "handcrafted-v1", "text": "家用跑步机", "note": "near-miss of action 跑步"}
+{"group": "near-raincoat-01", "id": "near-raincoat-01-a", "level1": "entity", "level2": "tool", "source": "handcrafted-v1", "text": "雨衣", "note": "near-miss of event 下雨"}
+{"group": "near-raincoat-01", "id": "near-raincoat-01-b", "level1": "entity", "level2": "tool", "source": "handcrafted-v1", "text": "一件雨衣", "note": "near-miss of event 下雨"}
+{"group": "near-raincoat-01", "id": "near-raincoat-01-c", "level1": "entity", "level2": "tool", "source": "handcrafted-v1", "text": "塑料雨衣", "note": "near-miss of event 下雨"}
+{"group": "near-spend-01", "id": "near-spend-01-a", "level1": "action", "level2": "making", "source": "handcrafted-v1", "text": "花钱", "note": "near-miss of entity 花"}
+{"group": "near-spend-01", "id": "near-spend-01-b", "level1": "action", "level2": "making", "source": "handcrafted-v1", "text": "乱花钱", "note": "near-miss of entity 花"}
+{"group": "near-spend-01", "id": "near-spend-01-c", "level1": "action", "level2": "making", "source": "handcrafted-v1", "text": "花掉很多钱", "note": "near-miss of entity 花"}
+{"group": "near-tragedy-01", "id": "near-tragedy-01-a", "level1": "abstract", "level2": "emotion", "source": "handcrafted-v1", "text": "杯具", "note": "slang pun on 杯子, means tragedy; ambiguous", "ambiguous": true}
+{"group": "near-tragedy-01", "id": "near-tragedy-01-b", "level1": "abstract", "level2": "emotion", "source": "handcrafted-v1", "text": "真是杯具", "note": "slang pun; ambiguous", "ambiguous": true}
+{"group": "near-tragedy-01", "id": "near-tragedy-01-c", "level1": "abstract", "level2": "emotion", "source": "handcrafted-v1", "text": "人生杯具", "note": "slang pun; ambiguous", "ambiguous": true}
+{"group": "unk-01", "id": "unk-01-a", "level1": null, "level2": null, "source": "handcrafted-v1", "text": "激光打印机", "unknown": true}
+{"group": "unk-02", "id": "unk-02-a", "level1": null, "level2": null, "source": "handcrafted-v1", "text": "拓扑学", "unknown": true}
+{"group": "unk-03", "id": "unk-03-a", "level1": null, "level2": null, "source": "handcrafted-v1", "text": "鳎目鱼", "unknown": true}
+{"group": "unk-04", "id": "unk-04-a", "level1": null, "level2": null, "source": "handcrafted-v1", "text": "铆钉枪", "unknown": true}
+{"group": "unk-05", "id": "unk-05-a", "level1": null, "level2": null, "source": "handcrafted-v1", "text": "打糍粑", "unknown": true}
+{"group": "unk-06", "id": "unk-06-a", "level1": null, "level2": null, "source": "handcrafted-v1", "text": "馕坑", "unknown": true}
+{"group": "unk-07", "id": "unk-07-a", "level1": null, "level2": null, "source": "handcrafted-v1", "text": "霰弹枪", "unknown": true}
+{"group": "unk-08", "id": "unk-08-a", "level1": null, "level2": null, "source": "handcrafted-v1", "text": "马拉松", "unknown": true}
