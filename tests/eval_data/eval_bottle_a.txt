@@ -1,0 +1,1 @@
+Bottle log one. material: glass. The bottle has a lid. has_lid: true. location: pantry. A bottle entry for stock.

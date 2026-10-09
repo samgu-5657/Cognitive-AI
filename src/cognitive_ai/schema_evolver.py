@@ -17,10 +17,14 @@ MAJOR_KINDS = {"split_category", "merge_categories", "reparent"}
 
 class SchemaEvolver:
     def __init__(self, memory: Memory,
-                 regression_check: Optional[Callable[[Memory], tuple[bool, str]]] = None):
+                 regression_check: Optional[Callable[[Memory], tuple[bool, str]]] = None,
+                 allow_structural: bool = True):
         self.mem = memory
         self.onto = Ontology(memory)
         self.regression_check = regression_check
+        # System B (facts only) sets allow_structural=False: structural kinds
+        # (reparent/split/merge) are then rejected instead of applied.
+        self.allow_structural = allow_structural
 
     # ---- versioning ----
     def current_version(self) -> int:
@@ -96,6 +100,9 @@ class SchemaEvolver:
 
     # ---- mutation implementations ----
     def _apply(self, payload: dict, kind: str) -> None:
+        if kind in MAJOR_KINDS and not self.allow_structural:
+            raise ValueError(
+                f"structural change '{kind}' blocked: system runs facts-only")
         if kind == "add_concept":
             self.onto.add_concept(
                 payload["id"], payload.get("name", payload["id"]),

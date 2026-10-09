@@ -20,6 +20,19 @@ INCONCLUSIVE_COOLDOWN_S = 300.0
 # (kept as inconclusive, never force-studied).
 MAX_RESEARCH_ATTEMPTS = 3
 
+# Total independent direct sources needed to promote hypothesis -> supported.
+SUPPORTED_MIN_SOURCES = 3
+
+# Excerpt-level Jaccard similarity at/above which two hits are treated as
+# copies of one origin (dependent), not independent corroboration.
+# Coarse heuristic (see README limits): catches obvious copies and light
+# rewordings, not paraphrases.
+NEAR_DUPLICATE_SIMILARITY = 0.85
+
+# classify(): best score at/above this is a match (or ambiguous when
+# conflicts exist); below it the observation is reported as novel.
+CLASSIFY_MATCH_THRESHOLD = 0.3
+
 # Upper bound on genuinely NEW questions persisted per generate() call.
 MAX_NEW_QUESTIONS_PER_STEP = 10
 

@@ -28,10 +28,17 @@
 - `novelty.py`: 新颖性/缺口检测。诚实标记中文理解能力的边界。
 - `schema_evolver.py`: 唯一允许修改概念结构的模块，负责版本快照与回滚。
 - `curiosity.py`: 研究问题生成与评分。评分公式与权重集中管理、可配置。
-- `research.py`: `ResearchProvider` 接口 + `LocalCorpusProvider`。外部来源只做数据处理。
+- `research.py`: `ResearchProvider` 接口 + `LocalCorpusProvider`（停用词剔除、
+  词边界匹配、内容指纹 `content_hash`、相关性分级 direct/indirect/unrelated）。
+  外部来源只做数据处理。关键词匹配不是语义理解（见 README 局限）。
 - `policy.py`: 研究/探索策略常量唯一来源（佐证数、可信度阈值、冷却期、
-  尝试上限、每步新增问题上限、停用词）。逻辑模块不得各自定义阈值。
-- `learner.py` / `loop.py`: 学习循环与预算控制。
+  尝试上限、每步新增问题上限、停用词、近重复阈值、晋升门槛、分类阈值）。
+  逻辑模块不得各自定义阈值。
+- `lifecycle.py`: 知识生命周期（candidate→hypothesis→supported→verified，
+  另有 contested/rejected/superseded）与晋升门检查 + 事件记录。
+  自主管线最高只能写 hypothesis；supported/verified 必须显式 promote。
+- `learner.py` / `loop.py`: 学习循环与预算控制。`Learner` 支持
+  `enable_structural=False`（纯事实系统 B）；`consolidate()` 为验证式结构学习。
 - `cli.py`: 薄命令行封装，不放核心逻辑。
 
 ## 3. 数据与持久化
@@ -47,7 +54,7 @@
 - 单一未验证来源不得修改核心概念体系。
 - 冲突证据必须保留双方，不得静默覆盖。
 
-## 4b. 研究→知识的证据门槛（审计后强制规则）
+## 4b. 研究→知识的证据门槛（审计后强制规则，Phase 2 扩展）
 
 - `research_question` 返回固定绑定
   (`question_id`/`target_id`/`key`/`evidence_sources`/`action`/
@@ -55,12 +62,21 @@
 - `inconclusive` 永不写入语义知识、永不产生结构版本。
 - 证据命中必须提及目标概念（id 或名称）；问题文本与 `target_id`
   不一致时直接记 `inconclusive`，不写库。
-- 知识库写入需要至少 `MIN_CORROBORATING_SOURCES=2` 个独立来源
+- 知识库写入需要至少 `MIN_CORROBORATING_SOURCES=2` 个**独立来源**
+  （按 `content_hash` 去重， excerpt 相似度≥阈值视为同一来源）
   给出**相同**的清洗后原子值；写入一律为 `hypothesis`。
+- 单一来源的线索记为 `candidate` Claim，不写属性、不升版本。
 - 抽取值只接受短原子值，拒绝句子残片。
+- 已知属性遇到 corroborated 对立值时：旧行不动，记 contested Claim +
+  contested 对手行 + lifecycle 事件（`record_conflict`）。
+- 生命周期：candidate→hypothesis（自动上限）→supported（≥3 源+显式
+  promote）→verified（≥3 源+具名确认+回归通过）；两文件一致永不自动
+  verified。详见 `lifecycle.describe()` / `cli lifecycle --describe`。
 - 无效尝试记 `attempts` + 冷却期，超限后保留不再强行研究。
 - 同一 `(text, target)` 问题永不重复建行；每步新增问题有上限；
   `new_questions` 只统计真正新增的行。
+- 结构学习（split/merge/reparent）只走 `consolidate()` + 回归门；
+  纯事实系统设 `enable_structural=False` 即拒结构修改。
 
 ## 5. 运行方式 (Windows PowerShell)
 

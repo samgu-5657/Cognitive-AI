@@ -8,9 +8,14 @@
 
 ## 功能状态
 
-- Implemented: 数据模型、概念体系（多重继承+循环检测）、SQLite 持久化、
+- Implemented: 数据模型、概念体系（多重继承+循环检测）、SQLite 持久化
+  （含 Phase 2 向后兼容迁移：`lifecycle_events` 表 + evidences 指纹列）、
   规则推理（继承/例外/冲突/unknown）、新颖性检测、结构演化（版本+回滚）、
-  好奇心评分+问题队列、本地语料研究、无限运行防护、CLI、全部测试。
+  好奇心评分+问题队列、本地语料研究（停用词/词边界/内容指纹/相关性分级）、
+  知识生命周期（candidate→hypothesis→supported→verified + contested/
+  rejected/superseded，自主管线最高 hypothesis）、分类器 `classify`
+ （match/ambiguous/novel）、验证式结构学习 `consolidate()`、
+  10 案例评测集 + A/B/C 对照实验、无限运行防护、CLI、全部测试。
 - Interface-only: `WebSearchProvider`（显式抛 `NotImplementedError`，不伪造结果）。
 - Planned: 神经网络模块（随机初始化，独立评估）、公开网页搜索、更丰富的中文解析。
 
@@ -108,17 +113,33 @@ py -m cognitive_ai.cli rollback 7
 ## 已知限制
 
 1. 中文理解仅限结构化输入 + 三种固定句式；任意句子会诚实返回未解析。
-2. 研究证据仅来自 `data/corpus/`；证据不足时问题保持 `inconclusive`，
-   不写库、不升版本（审计修复后行为）。写入知识库需要至少 2 个独立来源
-   给出相同的短原子值，且证据必须明确提及目标概念；阈值集中在
-   `src/cognitive_ai/policy.py`。旧版本曾写入过少量来源不明的
-   hypothesis 属性（如 `artifact.material` 中的句子残片），
-   已被新规则阻止继续产生；历史数据未自动删除，如需清理可用
-   `rollback` 回到对应版本（先备份 `data/cognitive.db`）。
-3. 属性值冲突默认保留双方 + 标记 `contested`，不自动覆盖 `verified`。
+2. 证据独立性是启发式，不是语义理解：`content_hash` 识别逐字复制，
+   excerpt Jaccard（≥0.85）识别轻度改写；改写充分的同源文本、同一事实的
+   多手转述会被误判为独立——上限已在测试与文档中声明。相关性分级
+   （direct/indirect/unrelated）只是"是否提及目标+是否有 key 模式"的表面
+   检查。研究证据仅来自本地语料；证据不足时保持 `inconclusive`，
+   不写库、不升版本。写入需 ≥2 独立来源相同的短原子值（`policy.py`）。
+   审计前旧版本曾写入少量来源不明的 hypothesis 属性，历史数据未自动删除，
+   如需清理可先备份 `data/cognitive.db` 再 `rollback`。
+3. 属性值冲突默认保留双方 + 标记 `contested`，不自动覆盖 `verified`；
+   verified 只能经显式 `promote ... --confirmed-by` 达成。
 4. 神经网络、在线搜索尚未实现（见 AGENTS.md）。
 5. `claims`/`evidences`/`questions` 记录不在概念快照内，回滚恢复概念结构，
    但保留冲突与研究的历史记录（有意为之：历史不可篡改）。
+
+## 评测与对照实验（Phase 2，复现命令）
+
+```powershell
+pytest tests/test_eval_concept_learning.py -q   # 10 案例评测集（tests/eval_data/）
+pytest tests/test_transfer_experiment.py -q -s  # A/B/C 对照（-s 显示对照表）
+pytest tests/test_lifecycle.py tests/test_evidence_independence.py tests/test_migration.py -q
+```
+
+评测基线结果（隔离库，`pytest -s` 可见明细表）：
+`EVAL accuracy=1.00, false_writes=0, abstention=3/3, unknown_detection=yes`；
+对照实验 A/B/C 在 5 个 held-out 测试上同得 5/5，仅 C 通过验证式拆分
+额外获得子组 bonus——结构学习带来可验证的迁移增益，但基础分类无差异
+（诚实结论：小规模评测上动态结构不总是最优）。
 
 ## 下一阶段计划
 

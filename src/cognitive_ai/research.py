@@ -9,6 +9,46 @@ from typing import Protocol
 from .policy import STOPWORDS
 
 
+def normalize_text(text: str) -> str:
+    """Lowercase + collapse whitespace: canonical form for fingerprinting."""
+    return re.sub(r"\s+", " ", (text or "").lower()).strip()
+
+
+def content_hash(text: str) -> str:
+    import hashlib
+    return hashlib.sha256(normalize_text(text).encode("utf-8")).hexdigest()
+
+
+def token_set(text: str) -> set[str]:
+    return set(re.findall(r"\w+", normalize_text(text), flags=re.UNICODE))
+
+
+def text_similarity(a: str, b: str) -> float:
+    """Jaccard similarity over token sets. 1.0 == identical vocabulary."""
+    ta, tb = token_set(a), token_set(b)
+    if not ta and not tb:
+        return 1.0
+    if not ta or not tb:
+        return 0.0
+    return len(ta & tb) / len(ta | tb)
+
+
+# Relevance grades for a hit w.r.t. (target concept, target key).
+#   direct:   mentions the target AND carries an extractable key pattern
+#   indirect: mentions the target but no usable key pattern
+#   unrelated: does not mention the target at all
+# NOTE: keyword-based grading only. This is NOT semantic understanding;
+# a 'direct' grade means surface patterns matched, nothing more.
+def grade_relevance(excerpt: str, target_terms: tuple[str, ...],
+                    key: str | None) -> str:
+    if not _mentions(excerpt, target_terms):
+        return "unrelated"
+    if key and re.search(rf"{re.escape(key)}\s*[:：]|\s{re.escape(key)}\s*是\s",
+                         excerpt):
+        return "direct"
+    return "indirect"
+
+
 def _key_tokens(query: str) -> list[str]:
     """Topical tokens: length > 1, lowercased, stopwords removed, order kept."""
     out: list[str] = []
@@ -136,6 +176,7 @@ class LocalCorpusProvider:
             results.append({"source": f"local:{os.path.basename(fp)}",
                             "path": fp, "hits": hits,
                             "matched_terms": matched,
+                            "content_hash": content_hash(text),
                             "excerpt": "\n---\n".join(excerpts)[:1200],
                             "credibility": round(credibility, 2),
                             "retrieved_at": mtime})

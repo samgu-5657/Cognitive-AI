@@ -113,7 +113,27 @@ CREATE TABLE IF NOT EXISTS meta(
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+-- Phase 2: knowledge lifecycle history (additive; old DBs gain it on open)
+CREATE TABLE IF NOT EXISTS lifecycle_events(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  target_type TEXT NOT NULL,
+  target_ref TEXT NOT NULL,
+  from_state TEXT NOT NULL,
+  to_state TEXT NOT NULL,
+  reason TEXT NOT NULL DEFAULT '',
+  evidence TEXT NOT NULL DEFAULT '[]',
+  created_at TEXT NOT NULL
+);
 """
+
+# Additive per-column migrations for databases created before Phase 2.
+# Only ADD COLUMN with defaults: old rows stay readable, new code treats
+# '' as 'unknown/ungraded'.
+EVIDENCE_MIGRATION_COLUMNS = (
+    ("content_hash", "TEXT NOT NULL DEFAULT ''"),
+    ("relevance", "TEXT NOT NULL DEFAULT ''"),
+    ("origin_note", "TEXT NOT NULL DEFAULT ''"),
+)
 
 
 class Memory:
@@ -127,10 +147,20 @@ class Memory:
         self.conn.execute("PRAGMA foreign_keys=ON")
         self.conn.executescript(SCHEMA_SQL)
         self.conn.commit()
+        self._migrate()
         if self.get_meta("schema_version") is None:
             self.set_meta("schema_version", "0")
         if self.get_meta("current_version") is None:
             self.set_meta("current_version", "0")
+
+    def _migrate(self) -> None:
+        """Backward-compatible migrations: additive only, never rewrite data."""
+        cols = {r["name"] for r in self.query("PRAGMA table_info(evidences)")}
+        for name, ddl in EVIDENCE_MIGRATION_COLUMNS:
+            if name not in cols:
+                self.conn.execute(
+                    f"ALTER TABLE evidences ADD COLUMN {name} {ddl}")
+        self.conn.commit()
 
     # ---- generic helpers ----
     def execute(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
@@ -349,16 +379,48 @@ class Memory:
         return int(cur.lastrowid)
 
     def add_evidence(self, claim_id: Optional[int], content: str, source: str,
-                     credibility: float = 0.5) -> int:
+                     credibility: float = 0.5, content_hash: str = "",
+                     relevance: str = "", origin_note: str = "") -> int:
         cur = self.execute(
-            "INSERT INTO evidences(claim_id,content,source,credibility,created_at)"
-            " VALUES(?,?,?,?,?)",
-            (claim_id, content, source, credibility, _utcnow()),
+            "INSERT INTO evidences(claim_id,content,source,credibility,"
+            "content_hash,relevance,origin_note,created_at)"
+            " VALUES(?,?,?,?,?,?,?,?)",
+            (claim_id, content, source, credibility, content_hash,
+             relevance, origin_note, _utcnow()),
         )
         return int(cur.lastrowid)
 
+    def list_evidences(self, claim_id: Optional[int] = None) -> list[dict]:
+        if claim_id is None:
+            return self.query("SELECT * FROM evidences ORDER BY id")
+        return self.query("SELECT * FROM evidences WHERE claim_id=? ORDER BY id",
+                          (claim_id,))
+
     def list_claims(self) -> list[dict]:
         return self.query("SELECT * FROM claims ORDER BY id")
+
+    # ---- lifecycle events ----
+    def record_lifecycle(self, target_type: str, target_ref: str,
+                         from_state: str, to_state: str, reason: str = "",
+                         evidence: list | None = None) -> int:
+        cur = self.execute(
+            "INSERT INTO lifecycle_events(target_type,target_ref,from_state,"
+            "to_state,reason,evidence,created_at)"
+            " VALUES(?,?,?,?,?,?,?)",
+            (target_type, target_ref, from_state, to_state, reason,
+             json.dumps(evidence or [], ensure_ascii=False), _utcnow()),
+        )
+        return int(cur.lastrowid)
+
+    def list_lifecycle(self, target_ref: Optional[str] = None,
+                       limit: int = 200) -> list[dict]:
+        if target_ref is None:
+            return self.query(
+                "SELECT * FROM lifecycle_events ORDER BY id DESC LIMIT ?",
+                (limit,))
+        return self.query(
+            "SELECT * FROM lifecycle_events WHERE target_ref=? ORDER BY id",
+            (target_ref,))
 
     # ---- questions ----
     def find_question(self, text: str,

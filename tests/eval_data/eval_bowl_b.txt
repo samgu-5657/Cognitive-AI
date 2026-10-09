@@ -1,0 +1,1 @@
+Bowl survey two. material: ceramic. has_handle: false. location: shelf. Another bowl entry for the catalog.

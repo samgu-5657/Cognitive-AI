@@ -6,13 +6,16 @@ import re
 from typing import Any, Optional
 
 from .curiosity import Curiosity
+from .lifecycle import contest_attribute
 from .memory import Memory
 from .novelty import NoveltyDetector
 from .ontology import Ontology
 from .policy import (INCONCLUSIVE_COOLDOWN_S, MAX_RESEARCH_ATTEMPTS,
-                     MIN_CORROBORATING_SOURCES, MIN_EVIDENCE_CREDIBILITY)
+                     MIN_CORROBORATING_SOURCES, MIN_EVIDENCE_CREDIBILITY,
+                     NEAR_DUPLICATE_SIMILARITY)
 from .reasoner import Reasoner
-from .research import LocalCorpusProvider, _mentions
+from .research import (LocalCorpusProvider, _mentions,
+                       grade_relevance, text_similarity)
 from .schema_evolver import SchemaEvolver
 
 
@@ -37,14 +40,18 @@ def default_regression(memory: Memory) -> tuple[bool, str]:
 class Learner:
     """Type-A (episodic) + Type-B (structural) learning. No neural nets here."""
 
-    def __init__(self, memory: Memory, corpus_dir: str):
+    def __init__(self, memory: Memory, corpus_dir: str,
+                 enable_structural: bool = True):
         self.mem = memory
         self.onto = Ontology(memory)
         self.reasoner = Reasoner(memory)
         self.detector = NoveltyDetector(memory)
         self.curiosity = Curiosity(memory)
         self.provider = LocalCorpusProvider(corpus_dir)
-        self.evolver = SchemaEvolver(memory, regression_check=default_regression)
+        self.enable_structural = enable_structural
+        self.evolver = SchemaEvolver(memory,
+                                     regression_check=default_regression,
+                                     allow_structural=enable_structural)
 
     # ---- one observation ----
     def observe(self, obs: dict) -> dict:
@@ -186,24 +193,19 @@ class Learner:
         rel_sources = [h["source"] for h in relevant]
         applied = None
         applied_change_id = None
+        action = "none"
         value = None
         if (key and target and self.mem.get_concept(target) is not None
                 and q["kind"] == "gap"):
             inh = self.onto.inherited_attributes(target)
+            groups = _independent_groups(relevant, key, tuple(focus))
+            agreed = [(v, g) for v, g in groups["agreed"].items()
+                      if len(g) >= MIN_CORROBORATING_SOURCES]
             if key not in inh:
-                # corroboration: >=2 relevant hits, same cleaned value
-                votes: dict[str, list[str]] = {}
-                for h in relevant:
-                    v = _clean_value(_extract_value(h.get("excerpt", ""), key))
-                    if v:
-                        votes.setdefault(v, []).append(h["source"])
-                agreed = [(v, s) for v, s in votes.items()
-                          if len(s) >= MIN_CORROBORATING_SOURCES]
                 if agreed:
                     agreed.sort(key=lambda kv: (-len(kv[1]), kv[0]))
                     value = agreed[0][0]
-                    supporting = [h for h in relevant
-                                  if h["source"] in agreed[0][1]]
+                    supporting = agreed[0][1]
                     r = self.evolver.direct_apply(
                         "add_attribute",
                         {"concept": target, "key": key, "value": value,
@@ -217,6 +219,54 @@ class Learner:
                     if r.get("ok"):
                         applied = r
                         applied_change_id = r.get("change_id")
+                        action = "add_attribute"
+                        self.mem.record_lifecycle(
+                            "attribute", f"{target}.{key}", "candidate",
+                            "hypothesis",
+                            f"research Q{qid}: {len(supporting)} independent "
+                            f"direct sources agree on '{value}'",
+                            supporting)
+                elif groups["single_source"]:
+                    # Exactly one independent origin: keep a candidate CLAIM
+                    # (no attribute, no version) so the lead is not lost
+                    # while the knowledge base stays clean.
+                    v, h = groups["single_source"][0]
+                    self._record_candidate(qid, q, target, key, v, h)
+            else:
+                # Key already known: never overwrite. A corroborated rival
+                # value is recorded BESIDE the old row as contested.
+                current = inh[key]["value"]
+                rivals = [(v, g) for v, g in agreed if v != str(current)
+                          and v != current]
+                if rivals:
+                    rivals.sort(key=lambda kv: (-len(kv[1]), kv[0]))
+                    value = rivals[0][0]
+                    supporting = rivals[0][1]
+                    conflict = self._record_rival(
+                        qid, q, target, key, current, value, supporting)
+                    if conflict.get("ok"):
+                        applied = conflict
+                        applied_change_id = conflict.get("change_id")
+                        action = "record_conflict"
+                elif agreed:
+                    # corroborated value equals what we already hold
+                    self.mem.update_question(
+                        qid, status="learned",
+                        detail={**detail, "attempts": attempts + 1,
+                                "evidence": rel_sources,
+                                "note": "already_known"})
+                    self.mem.add_experience(
+                        "research", f"Q{qid}: learned (already known)",
+                        {"question": q["text"], "target": target,
+                         "key": key})
+                    return {**base, "result": "learned",
+                            "evidence_sources": rel_sources,
+                            "action": "already_known",
+                            "applied_change_id": None}
+                elif groups["single_source"]:
+                    v, h = groups["single_source"][0]
+                    if v != current and v != str(current):
+                        self._record_candidate(qid, q, target, key, v, h)
         if applied:
             self.mem.update_question(
                 qid, status="learned",
@@ -228,11 +278,174 @@ class Learner:
                  "value": value, "hits": relevant, "applied": applied})
             return {**base, "result": "learned",
                     "evidence_sources": rel_sources,
-                    "action": "add_attribute",
+                    "action": action,
                     "applied_change_id": applied_change_id}
         reason = _inconclusive_reason(hits, relevant, key, target)
         return self._record_inconclusive(qid, q, detail, attempts,
                                          reason[0], reason[1], sources, base)
+
+    def _record_candidate(self, qid: int, q: dict, target: str,
+                            key: str, value: str, hit: dict) -> int:
+        """Store a single-origin lead as a candidate Claim (no KB write)."""
+        claim_id = self.mem.add_claim(
+            f"{target}.{key} may be '{value}' (single source, unverified)",
+            subject_id=target, status="candidate", confidence=0.35)
+        self.mem.add_evidence(
+            claim_id, hit.get("excerpt", "")[:600], hit.get("source", ""),
+            credibility=hit.get("credibility", 0.5),
+            content_hash=hit.get("content_hash", ""),
+            relevance="direct",
+            origin_note="single independent origin; needs corroboration")
+        self.mem.record_lifecycle(
+            "claim", str(claim_id), "none", "candidate",
+            f"research Q{qid}: single-origin lead, not promoted", [hit])
+        return claim_id
+
+    def _record_rival(self, qid: int, q: dict, target: str, key: str,
+                      current: Any, value: str, supporting: list) -> dict:
+        """Record corroborated rival evidence WITHOUT touching the old row.
+
+        Creates a contested Claim + a contested rival attribute row, logs
+        lifecycle contest events against the existing row(s), and returns
+        the schema-change result of the rival-row write.
+        """
+        claim_id = self.mem.add_claim(
+            f"{target}.{key}: {current} vs rival {value} "
+            f"({len(supporting)} independent sources)",
+            subject_id=target, status="contested", confidence=0.5)
+        for h in supporting:
+            self.mem.add_evidence(
+                claim_id, h.get("excerpt", "")[:600], h.get("source", ""),
+                credibility=h.get("credibility", 0.5),
+                content_hash=h.get("content_hash", ""),
+                relevance="direct",
+                origin_note="independent origin backing rival value")
+        for row in self.mem.get_attributes(target):
+            if row["key"] == key and row["status"] in (
+                    "candidate", "hypothesis", "supported", "verified"):
+                contest_attribute(
+                    self.mem, int(row["id"]), supporting,
+                    f"research Q{qid}: rival '{value}' from "
+                    f"{len(supporting)} independent sources; row untouched")
+        return self.evolver.direct_apply(
+            "add_attribute",
+            {"concept": target, "key": key, "value": value,
+             "confidence": round(
+                 min(h["credibility"] for h in supporting) * 0.8, 3),
+             "source": supporting[0]["source"], "status": "contested"},
+            reason=f"research Q{qid}: contested rival for {target}.{key}",
+            evidence=supporting)
+
+    def classify(self, obs: dict) -> dict:
+        """Rank known concepts for a structured observation.
+
+        Score per concept: +1 per observed attr matching an inherited
+        (key, value), -1 per value conflict, -0.25 per observed key the
+        concept cannot explain, normalized by number of observed attrs.
+        The unexplained penalty keeps sparsely-described concepts from
+        winning ties against genuinely similar ones.
+        Verdicts: 'match' (best >= threshold, no conflicts), 'ambiguous'
+        (best >= threshold but conflicts exist), 'novel' (nothing close).
+        Never writes to the knowledge base.
+        """
+        from .policy import CLASSIFY_MATCH_THRESHOLD
+        attrs: dict = obs.get("attributes", {}) or {}
+        scored = []
+        for c in self.mem.list_concepts():
+            inh = self.onto.inherited_attributes(c["id"])
+            match = conflict = unexplained = 0
+            details = []
+            for k, v in attrs.items():
+                if k in inh:
+                    if inh[k]["value"] == v:
+                        match += 1
+                        details.append({"key": k, "kind": "match",
+                                        "concept": inh[k]["concept_id"]})
+                    else:
+                        conflict += 1
+                        details.append({"key": k, "kind": "conflict",
+                                        "expected": inh[k]["value"],
+                                        "observed": v})
+                else:
+                    unexplained += 1
+                    details.append({"key": k, "kind": "unexplained"})
+            # (matches - conflicts - 0.25*unexplained) / n_attrs
+            score = round((match - conflict - 0.25 * unexplained)
+                          / max(1, len(attrs)), 3)
+            scored.append({"concept": c["id"], "score": score,
+                           "conflicts": [d for d in details
+                                         if d["kind"] == "conflict"],
+                           "matches": [d for d in details
+                                       if d["kind"] == "match"]})
+        scored.sort(key=lambda s: (-s["score"], s["concept"]))
+        best = scored[0] if scored else None
+        if best is None or best["score"] < CLASSIFY_MATCH_THRESHOLD:
+            verdict = "novel"
+        elif best["conflicts"]:
+            verdict = "ambiguous"
+        else:
+            verdict = "match"
+        return {"verdict": verdict, "best": best,
+                "ranking": scored[:3],
+                "observation": obs.get("name"),
+                "threshold": CLASSIFY_MATCH_THRESHOLD}
+
+    def consolidate(self) -> dict:
+        """Structural learning step (system C only).
+
+        Finds categories whose children stably diverge on an attribute key
+        and proposes a validated split. Each diverging side must be backed
+        by at least one research-sourced (local:) hypothesis row so a split
+        is never built on a single observation. Major changes pass through
+        the regression gate; failures are rejected, never forced.
+        Returns a report; never raises on validation failure.
+        """
+        if not self.enable_structural:
+            return {"ok": True, "action": "disabled",
+                    "note": "structural learning disabled (system B)"}
+        report: list[dict] = []
+        for parent in [c["id"] for c in self.mem.list_concepts()]:
+            kids = self.mem.get_children(parent)
+            if len(kids) < 2:
+                continue
+            divergent = self.detector._divergent_siblings(parent)
+            for k in divergent:
+                by_value: dict[str, list[str]] = {}
+                backed: dict[str, bool] = {}
+                for m in kids:
+                    inh = self.onto.inherited_attributes(m)
+                    if k not in inh:
+                        continue
+                    v = json.dumps(inh[k]["value"], sort_keys=True)
+                    by_value.setdefault(v, []).append(m)
+                    # backed = the value lives in stored knowledge (any
+                    # non-rejected lifecycle state), so the divergence is
+                    # not a single-observation fluke. Research-gated rows
+                    # always qualify; seed rows qualify as prior knowledge.
+                    st = inh[k].get("status", "hypothesis")
+                    backed[v] = backed.get(v, False) or (st != "rejected")
+                if len(by_value) >= 2 and all(backed.values()) and all(
+                        len(ms) >= 1 for ms in by_value.values()):
+                    groups = {f"{parent}_div{i}": ms
+                              for i, ms in enumerate(
+                                  sorted(by_value.values(),
+                                         key=lambda ms: sorted(ms)))}
+                    res = self.evolver.direct_apply(
+                        "split_category",
+                        {"category": parent, "groups": groups},
+                        reason=(f"consolidation: children of {parent} "
+                                f"stably diverge on '{k}' with stored values"),
+                        evidence=[{"key": k, "distribution": by_value}])
+                    report.append({"parent": parent, "key": k, **res})
+                    break  # one split per parent per pass; re-run to go deeper
+        self.mem.add_experience("evaluation",
+                                f"consolidation: {len(report)} proposal(s)",
+                                {"report": _jsonable(report)})
+        return {"ok": True, "proposals": report}
+        self.mem.add_experience("evaluation",
+                                f"consolidation: {len(report)} proposal(s)",
+                                {"report": _jsonable(report)})
+        return {"ok": True, "proposals": report}
 
     def _record_inconclusive(self, qid: int, q: dict, detail: dict,
                              attempts: int, code: str, note: str,
@@ -251,6 +464,60 @@ class Learner:
         return {**base, "result": "inconclusive",
                 "evidence_sources": sources, "action": "none",
                 "applied_change_id": None}
+
+
+def _independent_groups(relevant: list, key: str,
+                        focus: tuple[str, ...]) -> dict:
+    """Group relevant hits into independent origins per cleaned value.
+
+    - identical content_hash -> same origin (exact copies collapse);
+    - excerpt similarity >= NEAR_DUPLICATE_SIMILARITY -> same origin;
+    - only 'direct' hits (target mention + key pattern + clean value) vote.
+    Returns {"agreed": {value: [hits]}, "single_source": [(value, hit)],
+             "merged_duplicates": int}.
+    """
+    buckets: list[dict] = []  # each: {"hash":..., "excerpt":..., "hits":[...]}
+    merged = 0
+    for h in relevant:
+        exc = h.get("excerpt", "")
+        placed = False
+        for b in buckets:
+            if h.get("content_hash") and h.get("content_hash") == b["hash"]:
+                b["hits"].append(h)
+                placed = True
+                merged += 1
+                break
+            if text_similarity(exc, b["excerpt"]) >= NEAR_DUPLICATE_SIMILARITY:
+                b["hits"].append(h)
+                placed = True
+                merged += 1
+                break
+        if not placed:
+            buckets.append({"hash": h.get("content_hash", ""),
+                            "excerpt": exc, "hits": [h]})
+    agreed: dict[str, list] = {}
+    single: list[tuple] = []
+    for b in buckets:
+        # one vote per origin: value from the most credible hit in the bucket
+        ordered = sorted(b["hits"],
+                         key=lambda h: -h.get("credibility", 0))
+        v = _clean_value(_extract_value(ordered[0].get("excerpt", ""), key))
+        if not v:
+            continue
+        grade = grade_relevance(ordered[0].get("excerpt", ""), focus, key)
+        if grade != "direct":
+            continue
+        rep = dict(ordered[0])
+        rep["relevance"] = grade
+        rep["origin_note"] = ("merged duplicates" if len(b["hits"]) > 1
+                              else "independent origin")
+        agreed.setdefault(v, []).append(rep)
+    for v, hs in list(agreed.items()):
+        if len(hs) < MIN_CORROBORATING_SOURCES:
+            single.extend((v, h) for h in hs)
+            del agreed[v]
+    return {"agreed": agreed, "single_source": single,
+            "merged_duplicates": merged}
 
 
 def _detail_dict(raw: Any) -> dict:

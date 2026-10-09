@@ -1,0 +1,1 @@
+Bowl survey one. material: ceramic. The bowl has no handle. has_handle: false. location: shelf. Each bowl recorded with care.

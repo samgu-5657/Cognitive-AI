@@ -10,6 +10,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 
 from cognitive_ai.curiosity import Curiosity, SCORE_WEIGHTS
 from cognitive_ai.learner import Learner
+from cognitive_ai.lifecycle import describe as lifecycle_describe
+from cognitive_ai.lifecycle import promote_attribute
 from cognitive_ai.loop import ExplorationLoop
 from cognitive_ai.memory import Memory
 from cognitive_ai.novelty import NoveltyDetector, parse_chinese_simple
@@ -159,6 +161,36 @@ def cmd_rollback(a):
     mem.close()
 
 
+def cmd_consolidate(_a):
+    mem = get_memory()
+    out = Learner(mem, CORPUS).consolidate()
+    print(json.dumps(out, ensure_ascii=False, indent=2, default=str))
+    mem.close()
+
+
+def cmd_lifecycle(a):
+    mem = get_memory()
+    if a.target:
+        rows = mem.list_lifecycle(a.target)
+    else:
+        rows = mem.list_lifecycle(limit=a.limit)
+    if a.describe:
+        print(json.dumps(lifecycle_describe(), ensure_ascii=False, indent=2))
+    else:
+        print(json.dumps(rows, ensure_ascii=False, indent=2, default=str))
+    mem.close()
+
+
+def cmd_promote(a):
+    mem = get_memory()
+    ev = json.loads(a.evidence) if a.evidence else []
+    print(json.dumps(promote_attribute(
+        mem, a.attr_id, a.to, evidence=ev,
+        confirmed_by=a.confirmed_by or "", reason=a.reason or ""),
+        ensure_ascii=False, indent=2, default=str))
+    mem.close()
+
+
 def cmd_doctor(_a):
     mem = get_memory()
     onto = Ontology(mem)
@@ -202,6 +234,14 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(fn=cmd_experiences)
     sub.add_parser("history").set_defaults(fn=cmd_history)
     s = sub.add_parser("rollback"); s.add_argument("version", type=int); s.set_defaults(fn=cmd_rollback)
+    sub.add_parser("consolidate").set_defaults(fn=cmd_consolidate)
+    s = sub.add_parser("lifecycle"); s.add_argument("--target", default=None)
+    s.add_argument("--limit", type=int, default=50)
+    s.add_argument("--describe", action="store_true"); s.set_defaults(fn=cmd_lifecycle)
+    s = sub.add_parser("promote"); s.add_argument("attr_id", type=int)
+    s.add_argument("to"); s.add_argument("--evidence", default="[]")
+    s.add_argument("--confirmed-by", default=""); s.add_argument("--reason", default="")
+    s.set_defaults(fn=cmd_promote)
     sub.add_parser("doctor").set_defaults(fn=cmd_doctor)
     return p
 
