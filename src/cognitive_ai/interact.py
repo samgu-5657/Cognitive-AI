@@ -44,6 +44,7 @@ ALIASES = {
     "队列": "queue", "审核": "review", "状态": "state",
     "取消": "cancel", "理解": "understand", "确认": "confirm",
     "上下文": "context", "清空上下文": "clear_context",
+    "解题": "solve", "求解": "solve", "任务": "task",
 }
 
 TEACH_STAGES = ("attrs", "function", "category", "done")
@@ -129,6 +130,7 @@ class Session:
               "state": self._state, "cancel": self._cancel,
               "understand": self._understand, "confirm": self._confirm,
               "context": self._context, "clear_context": self._clear_context,
+              "solve": self._solve, "task": self._task,
               }.get(cmd)
         if fn is None:
             return self._fallback(line)
@@ -153,6 +155,8 @@ class Session:
             "  状态/state [名称]             显示认知状态与证据",
             "  理解/understand <句子>        解析自然语言,显示将执行的操作",
             "  确认/confirm                  执行待确认的解析(无待确认则空转)",
+            "  解题/solve <问题>             统一认知执行(数学/概念/逻辑)",
+            "  任务/task <id>                查看已保存任务的推理轨迹",
             "  上下文/context  清空上下文/clear_context  会话指代记忆管理",
             "  队列/queue [pending]  审核/review <id> -- 训练样本审核",
             "  经历/历史/模型  experiences/history/model",
@@ -648,6 +652,43 @@ class Session:
     def _clear_context(self, args) -> list[str]:
         self.mem.clear_context(self.session_id)
         return ["当前会话上下文已清除(知识库不受影响)。"]
+
+    def _solve(self, args) -> list[str]:
+        # 解题 <问题>: 统一执行循环 + 基于轨迹的答案
+        if not args:
+            return ["用法: 解题 <数学/概念/逻辑问题>  (如: 解题 计算3+4*2)"]
+        from .executor import solve_text
+        from .explainer import explain
+        from .semantics import parse_sentence as _parse
+        text = " ".join(args)
+        frame = _parse(text, source="user").to_dict()
+        trace = solve_text(text, frame, self.mem, self.onto, self.reasoner)
+        ans = explain(trace, style="steps" if len(args) > 3 else "short")
+        self.mem.add_experience(
+            "evaluation", f"chat solve -> {trace['task']['status']}",
+            {"task_id": trace["task"]["task_id"],
+             "certainty": ans["certainty"]})
+        return [f"[solve] {ans['text']}",
+                f"任务{trace['task']['task_id']} "
+                f"状态={trace['task']['status']} 确定度={ans['certainty']}"]
+
+    def _task(self, args) -> list[str]:
+        if not args:
+            rows = self.mem.query(
+                "SELECT task_id,task_type,status FROM cog_tasks ORDER BY "
+                "rowid DESC LIMIT 10")
+            return [f"{r['task_id']} [{r['task_type']}/{r['status']}]"
+                    for r in rows] or ["(无任务记录)"]
+        from .executor import load_trace
+        tr = load_trace(self.mem, args[0])
+        if not tr:
+            return ["查无此任务。"]
+        steps = tr.get("steps", [])
+        out = [f"任务{args[0]} status={tr.get('task', {}).get('status')}"]
+        for s in steps[:12]:
+            out.append(f"  {s.get('op')}: {s.get('status')} "
+                       f"{str(s.get('note', ''))[:80]}")
+        return out
 
     def _fallback(self, line: str) -> list[str]:
         # try compositional parse before giving up; a parsed frame still

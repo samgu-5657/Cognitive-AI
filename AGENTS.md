@@ -54,10 +54,16 @@
   教学走现有 learner/lifecycle/queue/loop，无平行记忆系统。
   4B 增加：`理解/确认`（帧→预览→执行三段式）、会话上下文（持久、
   可看可清、会话隔离）、纠正关联原判断、空属性归类 insufficient。
+  4C 增加：`解题/任务`（统一认知执行入口，轨迹落库可查）。
 - `semantics.py`: 组合式中文解析（槽位规则+词法 markers，非整句硬编码），
   输出统一候选帧；否定/hedge/纠正/条件/量词/指代均有确定性规则与回退。
 - `neural/intent.py`: 微型意图分类网（只定意图，不产槽位/事实），
   数据 `data/semantics/` 组隔离，规则-vs-网独立对比。
+- 4C 执行层：`cogtask.py`（统一任务表示）/`operations.py`（内部操作协议，
+  hand_rule 与 learned_net 明确标记）/`mathengine.py`（自研符号运算，
+  禁 eval、无外部求解器）/`executor.py`（执行循环+轨迹持久化+失败转缺口，
+  核心操作不可摘除、空源检查必败）/`explainer.py`（只转述轨迹，
+  未验证不出确定结论）。
 - `cli.py`: 薄命令行封装，不放核心逻辑。
 
 ## 3. 数据与持久化

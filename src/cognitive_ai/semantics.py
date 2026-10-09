@@ -109,13 +109,14 @@ def parse_sentence(sentence: str, source: str = "user") -> SemanticFrame:
     if not s:
         fr.trace.append("empty input")
         return fr
-    # 1. query? 吗/呢 only count sentence-finally (的话呢哈哈 is not a
-    # question); content question words count anywhere.
-    if s.endswith(QUERY_MARKS_END) or _has_any(s, QUERY_MARKS_ANY):
-        fr.intent, fr.modality = "query", "unknown"
-        fr.trace.append("query marker found")
-        fr.confidence = 0.5
-        return fr
+    # 1. interrogative? 吗/呢 only sentence-finally (的话呢哈哈 is not a
+    # question); content question words count anywhere. Recorded FIRST but
+    # applied LAST: slots still parse (杯子的材质是什么 keeps entities),
+    # the question form only shapes the final intent.
+    interrogative = s.endswith(QUERY_MARKS_END) or \
+        _has_any(s, QUERY_MARKS_ANY)
+    if interrogative:
+        fr.trace.append("interrogative form noted")
     # 2. correction? (handled before modality so 其实 inside corrections wins)
     mark = _has_any(s, CORRECTION_MARKS)
     if mark:
@@ -143,15 +144,18 @@ def parse_sentence(sentence: str, source: str = "user") -> SemanticFrame:
     if cmark:
         rest = s.split(cmark, 1)[1]
         cond, eff = rest, ""
-        for tail in ("就", "那么"):
-            if tail in rest:
-                cond, eff = rest.split(tail, 1)
-                break
-        if not eff.strip():
-            # fallback: split condition/effect on the first comma
-            for sep in ("，", ",", "、"):
-                if sep in rest:
-                    cond, eff = rest.split(sep, 1)
+        # comma-first split (如果下雨，地面就会湿): condition is the
+        # clause before ，; otherwise fall back to 就/那么
+        mcomma = re.search(r"[，,]", rest)
+        mj = re.search(r"就|那么", rest)
+        if mcomma and (not mj or mcomma.start() < mj.start()):
+            cond, eff = rest[:mcomma.start()], rest[mcomma.end():]
+            eff = re.sub(r"^(就|那么)+", "", eff).strip()
+            cond = cond.strip()
+        else:
+            for tail in ("就", "那么"):
+                if tail in rest:
+                    cond, eff = rest.split(tail, 1)
                     break
         fr.intent, fr.modality, fr.scope = \
             "causal", "conditional", "generic"
@@ -223,6 +227,9 @@ def parse_sentence(sentence: str, source: str = "user") -> SemanticFrame:
          "capable"),
         # X会V (2+ char complement; bare 会议/误会 must not match)
         (re.compile(r"^(?P<a>.+?)会(?P<b>.{2,})$"), "capable"),
+        # X放在哪里 / X在哪里 -> location question
+        (re.compile(r"^(?P<a>.+?)(放在哪里|在哪里|在哪儿|位于哪里)$"),
+         "where"),
         # 我买了X / 我有一个X / 我家有X -> instance observation
         (re.compile(r"^(?:我(?:今天|刚)?买了|我有一个|今天买了|我家有|家里有)"
                     r"(?P<b>.+?)$"),
@@ -250,6 +257,16 @@ def parse_sentence(sentence: str, source: str = "user") -> SemanticFrame:
             fr.trace.append("negation fallback (no structure claimed)")
         else:
             fr.trace.append("no pattern matched")
+    # interrogative applied LAST: a parsed statement-question keeps its
+    # slots and becomes a query intent (杯子的材质是什么 asks, not asserts)
+    if interrogative and fr.intent in ("classify", "attribute", "function"):
+        fr.intent = "query"
+        fr.trace.append("interrogative: statement intent -> query")
+        fr.confidence = round(max(0.0, fr.confidence - 0.1), 3)
+    elif interrogative and fr.intent == "unknown":
+        fr.intent, fr.modality = "query", "unknown"
+        fr.trace.append("interrogative without slots")
+        fr.confidence = 0.5
     # 6. pronouns -> unresolved (resolution happens against context later).
     # Flag a pronoun unless its only occurrences sit inside longer entity
     # words (e.g. 这个 inside 这个壶 is a determiner, not a bare reference).
@@ -377,6 +394,11 @@ def _fill(fr: SemanticFrame, kind: str, m, neg, hedge) -> None:
         fr.intent, fr.modality = "observe", "assert"
         if fr.scope == "unknown":
             fr.scope = "instance"
+        fr.confidence = 0.85
+    elif kind == "where":
+        fr.predicates.append({"type": "query_attr", "subj": a,
+                              "key": "location"})
+        fr.intent, fr.modality = "query", "unknown"
         fr.confidence = 0.85
 
 

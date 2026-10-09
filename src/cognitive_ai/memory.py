@@ -130,6 +130,15 @@ CREATE TABLE IF NOT EXISTS dialogue_context(
   state TEXT NOT NULL DEFAULT '{}',
   updated_at TEXT NOT NULL
 );
+-- Phase 4C: persisted cognitive execution traces (additive)
+CREATE TABLE IF NOT EXISTS cog_tasks(
+  task_id TEXT PRIMARY KEY,
+  task_type TEXT NOT NULL DEFAULT 'unknown',
+  input_text TEXT NOT NULL DEFAULT '',
+  trace TEXT NOT NULL DEFAULT '{}',
+  status TEXT NOT NULL DEFAULT 'created',
+  created_at TEXT NOT NULL
+);
 """
 
 # Additive per-column migrations for databases created before Phase 2.
