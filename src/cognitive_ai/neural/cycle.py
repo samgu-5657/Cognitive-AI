@@ -24,17 +24,41 @@ from .queue import UnknownQueue
 
 
 def cycle_predict(adapter: NeuralAdapter, queue: UnknownQueue, memory,
-                  text: str, source: str = "cycle") -> dict:
-    """Step 1-2 + 4(partial): predict, quarantine unknowns, log experience."""
-    cand = adapter.predict(text)
+                  text: str, source: str = "cycle",
+                  ood: dict | None = None) -> dict:
+    """Step 1-2 + 4(partial): predict, quarantine unknowns, log experience.
+
+    With ood artifacts (prototypes/thresholds/second model), the 5-way
+    verdict decides: anything but known_confident is quarantined.
+    Without them, falls back to the adapter maxprob threshold.
+    """
+    if ood and ood.get("protos") and ood.get("thresholds"):
+        from .ood import assess
+        second = ood.get("second")
+        verdict = assess(text, adapter.model, adapter.vocab,
+                         ood["protos"], ood.get("temperature", 1.0),
+                         ood["thresholds"],
+                         second=second)
+        cand = {"concept_type": None, "candidate_category": None,
+                "confidence": verdict.get("maxprob", 0.0),
+                "model_version": adapter.version,
+                "verdict": ("known" if verdict["verdict"] == "known_confident"
+                            else "unknown"),
+                "ood_verdict": verdict["verdict"],
+                "ood_reasons": verdict.get("reasons", []),
+                "predicted": verdict.get("predicted"),
+                "input": text, "level2": None, "level2_confidence": 0.0}
+    else:
+        cand = adapter.predict(text)
     memory.add_experience(
         "observation", f"neural saw '{text}' -> {cand['verdict']}",
         {"candidate": cand, "model_version": adapter.version})
     queued = None
     if cand["verdict"] == "unknown":
         queued = queue.add(
-            text, adapter.version, None, None, cand["confidence"],
-            reason="low_confidence", source=source)
+            text, adapter.version, cand.get("predicted"), None,
+            cand["confidence"],
+            reason=cand.get("ood_verdict", "low_confidence"), source=source)
     return {"candidate": cand, "queued": queued}
 
 

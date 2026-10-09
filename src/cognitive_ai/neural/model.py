@@ -40,10 +40,13 @@ class CharCNN:
                 self.fc1, self.fc2 = _heads(torch, filters * len(kernels),
                                             n_l1, n_l2)
 
-            def forward(self, x):
+            def features(self, x):
                 h = self.emb(x).transpose(1, 2)  # (B, E, L)
                 feats = [torch.relu(c(h)).max(dim=2).values for c in self.convs]
-                h = self.drop(torch.cat(feats, dim=1))
+                return torch.cat(feats, dim=1)
+
+            def forward(self, x):
+                h = self.drop(self.features(x))
                 return self.fc1(h), self.fc2(h)
 
         self.net = Net()
@@ -59,6 +62,16 @@ class CharCNN:
 
     def eval(self):
         return self.net.eval()
+
+    def features(self, x):
+        torch = require_torch()
+        was_training = self.net.training
+        self.net.eval()
+        with torch.no_grad():
+            f = self.net.features(x)
+        if was_training:
+            self.net.train()
+        return f
 
     def state_dict(self):
         return self.net.state_dict()
@@ -84,12 +97,13 @@ class CharBiGRU:
                 self.drop = nn.Dropout(dropout)
                 self.fc1, self.fc2 = _heads(torch, hidden * 4, n_l1, n_l2)
 
-            def forward(self, x):
+            def features(self, x):
                 h = self.emb(x)
                 h, _ = self.gru(h)  # (B, L, 2H)
-                pooled = torch.cat([h.mean(dim=1), h.max(dim=1).values],
-                                   dim=1)
-                pooled = self.drop(pooled)
+                return torch.cat([h.mean(dim=1), h.max(dim=1).values], dim=1)
+
+            def forward(self, x):
+                pooled = self.drop(self.features(x))
                 return self.fc1(pooled), self.fc2(pooled)
 
         self.net = Net()
@@ -105,6 +119,16 @@ class CharBiGRU:
 
     def eval(self):
         return self.net.eval()
+
+    def features(self, x):
+        torch = require_torch()
+        was_training = self.net.training
+        self.net.eval()
+        with torch.no_grad():
+            f = self.net.features(x)
+        if was_training:
+            self.net.train()
+        return f
 
     def state_dict(self):
         return self.net.state_dict()

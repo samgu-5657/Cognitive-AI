@@ -199,6 +199,28 @@ pytest tests/test_neural_3b.py tests/test_neural_transfer3b.py tests/test_neural
 A/B/C/D 小实验：A(冻)新0.33/旧0.58，B(新)C(新+回放)D(重训)新词皆0.67，
 旧知识 C 0.917 > D 0.833 > B 0.75——回放有效，但样本量小，属初步信号。
 
+## 开放世界发现（Phase 3C：未知检测 + 候选概念，CPU 可运行）
+
+```powershell
+py -m cognitive_ai.cli neural-ood 跑步机 --second gru-v1
+py -m cognitive_ai.cli neural-discover --tag cnn-v1
+pytest tests/test_neural_3c.py tests/test_neural_discovery_xfer.py -q
+```
+
+未知检测（原型由 train 定、阈值由 VAL 定，TEST 只报告）：
+ verdict 分布（69 有标）similar 24 / confident 20 / unjudgeable 21 /
+ novel 2 / uncertain 2；接受精度 12/20=0.60（裸模型 29/69=0.42，
+ 以覆盖 29% 为代价将错误率减半）；未知 FAR 1/8（激光打印机两网一致
+ 误判 entity——诚实失败）；校准温度 T=2.3 降 NLL 但 ECE 0.170→0.194
+ 未改善，故 verdict 用原始概率（VAL 上二者接受精度相当）。
+ 漏网：跑步机/花钱/跳舞两网一致误判；代价：自行车等可知词被连带弃权。
+候选发现：审核样本满足内聚+同族 L2 全清+LOO≥0.75 才提 new_l2，
+ 否则 insufficient；L1 新类只存候选、永不自动扩展。
+结构对照（held-out 铁锅/12 冻结旧例，同预算）：
+ A 只检测（铁锅 unjudgeable，旧 0.583），B 只加事实（L1 entity，旧 0.917），
+ C 验证后扩展（L2=kitchenware 命中，旧 0.917，门禁 delta +0.33）——
+ 小样本上的真实迁移增益；若验证失败 C 自动退回 base（已测试）。
+
 ## 下一阶段计划
 
 1. 更严格的研究证据门槛：同一结论需两个独立来源才进入知识库。

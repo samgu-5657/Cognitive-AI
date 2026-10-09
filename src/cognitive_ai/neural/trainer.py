@@ -191,17 +191,20 @@ def incremental_train(base_checkpoint: str, base_vocab: str,
     vocab = CharVocab.load(base_vocab)
     ck = torch.load(base_checkpoint, map_location="cpu", weights_only=True)
     hp = ck.get("hparams", {})
-    model = build_model(ck["kind"], len(vocab), len(LEVEL1), len(LEVEL2),
+    ck_l2 = list(ck.get("level2", LEVEL2))
+    model = build_model(ck["kind"], len(vocab), len(LEVEL1), len(ck_l2),
                         emb_dim=hp.get("emb_dim", 32),
                         filters=hp.get("filters", 32),
                         dropout=hp.get("dropout", 0.3))
     model.load_state_dict(ck["state"])
     before_fp = weights_fingerprint(model)
-    l2_map = LEVEL2
+    # label map starts from the CHECKPOINT's own map (already-extended
+    # candidates keep their width); requested l2_labels extend further.
+    l2_map = ck_l2
     if l2_labels:
-        unknown_l2 = [l for l in l2_labels if l not in LEVEL2]
+        unknown_l2 = [l for l in l2_labels if l not in l2_map]
         if unknown_l2:
-            model, l2_map = extend_l2(model, LEVEL2, l2_labels)
+            model, l2_map = extend_l2(model, l2_map, l2_map + unknown_l2)
     replay = _stratified_replay(
         [r for r in replay_rows if r.get("level1")],
         int(round(len(new_rows) * replay_ratio)), seed)
@@ -238,7 +241,7 @@ def incremental_train(base_checkpoint: str, base_vocab: str,
     meta = {"base": base_checkpoint, "seed": seed, "epochs": epochs,
             "batch": batch, "lr": lr, "replay_ratio": replay_ratio,
             "new_n": len(new_rows), "replay_n": len(replay),
-            "l2_extended": l2_map != LEVEL2, "before": before_fp,
+            "l2_extended": l2_map != ck_l2, "before": before_fp,
             "after": after_fp, "log": log, "device": "cpu"}
     with open(os.path.join(out_dir, "incremental.json"), "w",
               encoding="utf-8") as fh:

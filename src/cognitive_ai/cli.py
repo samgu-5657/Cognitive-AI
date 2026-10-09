@@ -334,6 +334,73 @@ def cmd_neural_queue_export(a):
     print(json.dumps({"ok": True, "exported": len(rows), "file": a.out}))
 
 
+def _load_ood_bundle(model_dir: str) -> dict | None:
+    from cognitive_ai.neural.ood import load_artifacts
+    arts = load_artifacts(model_dir)
+    if not (arts["prototypes.json"] and arts["ood_thresholds.json"]):
+        return None
+    # Raw probabilities: the temperature fit did not improve ECE or
+    # accept-precision (see Phase 3C report), so verdicts stay unscaled.
+    return {"protos": arts["prototypes.json"],
+            "thresholds": arts["ood_thresholds.json"],
+            "temperature": 1.0}
+
+
+def cmd_neural_ood(a):
+    from cognitive_ai.neural.adapter import NeuralAdapter
+    from cognitive_ai.neural.ood import assess, load_artifacts
+    root = os.path.join(ROOT, "models", a.tag)
+    arts = load_artifacts(root)
+    if not (arts["prototypes.json"] and arts["ood_thresholds.json"]):
+        print(json.dumps({"ok": False,
+                          "error": "no OOD artifacts; build them first"}))
+        return
+    ad = NeuralAdapter(os.path.join(root, "best.pt"),
+                       os.path.join(root, "vocab.json"))
+    second = None
+    if a.second:
+        sroot = os.path.join(ROOT, "models", a.second)
+        sad = NeuralAdapter(os.path.join(sroot, "best.pt"),
+                            os.path.join(sroot, "vocab.json"))
+        second = (sad.model, sad.vocab)
+    out = assess(a.text, ad.model, ad.vocab, arts["prototypes.json"],
+                 # Raw probabilities: temperature fitting reduced NLL but did
+                 # NOT improve ECE (0.170->0.194) or val accept-precision, so
+                 # verdicts stay unscaled. The fit is kept as a diagnostic.
+                 1.0, arts["ood_thresholds.json"], second=second)
+    print(json.dumps(out, ensure_ascii=False, indent=2))
+
+
+def cmd_neural_discover(a):
+    import json as _json
+    from cognitive_ai.neural.adapter import NeuralAdapter
+    from cognitive_ai.neural.discovery import (discover, l2_prototypes,
+                                               validate_proposal)
+    from cognitive_ai.neural.ood import class_prototypes, load_artifacts
+    from cognitive_ai.neural.queue import UnknownQueue
+    root = os.path.join(ROOT, "models", a.tag)
+    arts = load_artifacts(root)
+    ad = NeuralAdapter(os.path.join(root, "best.pt"),
+                       os.path.join(root, "vocab.json"))
+    from cognitive_ai.neural.dataset import load_jsonl
+    tr = [r for r in load_jsonl(a.train) if r.get("level1")]
+    l1p = arts["prototypes.json"] or class_prototypes(ad.model, ad.vocab, tr)
+    l2p = l2_prototypes(ad.model, ad.vocab, tr)
+    th = arts["ood_thresholds.json"] or {"dist_far": 4.0}
+    samples = [{"sample_id": r["sample_id"], "text": r["text"],
+                "l1": r["label"]["l1"], "l2": r["label"]["l2"]}
+               for r in UnknownQueue(a.queue if a.queue else _queue_path())
+               .accepted()]
+    rep = discover(samples, ad.model, ad.vocab, l1p, l2p, th)
+    sel = rep["selected"]
+    validation = None
+    if sel["kind"] in ("new_l2", "new_l1_candidate"):
+        group = [s for s in samples if s["l1"] == sel.get("l1")]
+        validation = validate_proposal(group, ad.model, ad.vocab, l1p, l2p)
+    print(json.dumps({**rep, "validation": validation},
+                     ensure_ascii=False, indent=2, default=str))
+
+
 def cmd_neural_incremental(a):
     from cognitive_ai.neural.dataset import load_jsonl
     from cognitive_ai.neural.queue import UnknownQueue
@@ -496,6 +563,13 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("neural-queue-dedup").set_defaults(fn=cmd_neural_queue_dedup)
     s = sub.add_parser("neural-queue-export"); s.add_argument("--out", required=True)
     s.set_defaults(fn=cmd_neural_queue_export)
+    s = sub.add_parser("neural-ood"); s.add_argument("text")
+    s.add_argument("--tag", default="cnn-v1"); s.add_argument("--second", default="")
+    s.set_defaults(fn=cmd_neural_ood)
+    s = sub.add_parser("neural-discover"); s.add_argument("--tag", default="cnn-v1")
+    s.add_argument("--queue", default=None)
+    s.add_argument("--train", default=os.path.join(DATA, "neural", "train.jsonl"))
+    s.set_defaults(fn=cmd_neural_discover)
     s = sub.add_parser("neural-incremental"); s.add_argument("--base", default="cnn-v1")
     s.add_argument("--out", required=True); s.add_argument("--queue", default=None)
     s.add_argument("--train", default=os.path.join(DATA, "neural", "train.jsonl"))
