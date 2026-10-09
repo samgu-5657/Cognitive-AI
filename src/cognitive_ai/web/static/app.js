@@ -96,5 +96,9 @@ $("e-gaps").onclick = async () => { show("explore-out", await api("/api/gaps"));
 $("h-go").onclick = async () => { show("history-out", await api("/api/history?limit=30")); };
 $("h-tasks").onclick = async () => { show("history-out", await api("/api/tasks?limit=20")); };
 $("h-task").onclick = async () => { show("history-out", await api("/api/tasks/" + $("h-tid").value)); };
+$("a-go").onclick = async () => { show("analogy-out", await api("/api/analogies")); };
+$("a-fix").onclick = async () => {
+  show("analogy-out", await api("/api/analogies/correct",
+    {task_id: $("a-task").value, candidate_task_id: $("a-cand").value, effect: $("a-eff").value})); };
 $("m-go").onclick = async () => { show("model-out", await api("/api/model")); };
 $("p-go").onclick = async () => { show("model-out", await api("/api/predict", {text: $("p-text").value})); };

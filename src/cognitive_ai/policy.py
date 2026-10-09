@@ -33,6 +33,11 @@ NEAR_DUPLICATE_SIMILARITY = 0.85
 # conflicts exist); below it the observation is reported as novel.
 CLASSIFY_MATCH_THRESHOLD = 0.3
 
+# Analogy acceptance bar: the MAJORITY of typed structure must align
+# (goal kind + type + ordered op chain + slot keys). Tunable central
+# policy, exercised on both sides by tests (accept above, refuse below).
+ANALOGY_STRUCT_MIN = 0.5
+
 # Upper bound on genuinely NEW questions persisted per generate() call.
 MAX_NEW_QUESTIONS_PER_STEP = 10
 

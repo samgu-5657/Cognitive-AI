@@ -156,6 +156,14 @@ CREATE TABLE IF NOT EXISTS learnable_rules(
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+-- Phase 5B: user corrections to analogy mappings (additive)
+CREATE TABLE IF NOT EXISTS analogy_feedback(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id TEXT NOT NULL DEFAULT '',
+  source_task_id TEXT NOT NULL DEFAULT '',
+  correction TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL
+);
 """
 
 # Additive per-column migrations for databases created before Phase 2.
@@ -511,6 +519,41 @@ class Memory:
             except Exception:
                 row[k] = {} if k != "previous" else ""
         return row
+
+    # ---- analogy feedback (Phase 5B) ----
+    def add_feedback(self, task_id: str, source_task_id: str,
+                     correction: dict) -> int:
+        cur = self.execute(
+            "INSERT INTO analogy_feedback(task_id,source_task_id,correction,"
+            "created_at) VALUES(?,?,?,?)",
+            (task_id, source_task_id,
+             json.dumps(correction, ensure_ascii=False), _utcnow()))
+        return int(cur.lastrowid)
+
+    def list_feedback(self) -> list[dict]:
+        return self.query("SELECT * FROM analogy_feedback ORDER BY id")
+
+    def feedback_adjustments(self) -> dict:
+        """User corrections as candidate score adjustments.
+
+        A correction {candidate_task_id, effect: boost|penalize} shifts
+        future retrieval transparently (reported per candidate).
+        """
+        adj: dict[str, float] = {}
+        for row in self.list_feedback():
+            try:
+                corr = json.loads(row["correction"]) \
+                    if isinstance(row["correction"], str) \
+                    else row["correction"]
+            except Exception:
+                continue
+            cid = corr.get("candidate_task_id") or row["source_task_id"]
+            eff = corr.get("effect", "")
+            if eff == "boost":
+                adj[cid] = adj.get(cid, 0.0) + 0.2
+            elif eff == "penalize":
+                adj[cid] = adj.get(cid, 0.0) - 0.3
+        return adj
 
     # ---- dialogue context (per session; never shared across sessions) ----
     def get_context(self, session: str) -> dict:

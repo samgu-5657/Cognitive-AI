@@ -8,6 +8,8 @@ rules ("hand_rule") from network-learned abilities ("learned_net").
 """
 from __future__ import annotations
 
+import json
+
 
 class OpError(Exception):
     pass
@@ -298,7 +300,6 @@ class Replan(Operation):
 class RetrieveRules(Operation):
     name = "retrieve_rules"
     origin = "induced_rule"
-
     def execute(self, inputs, ctx):
         mem = ctx["memory"]
         rules = mem.list_rules_learned(status="active",
@@ -368,7 +369,33 @@ class ApplyLearnedRule(Operation):
             if ok else "nothing applied"
 
 
+class Analogize(Operation):
+    name = "analogize"
+    origin = "hand_rule"  # the retrieval/mapping machinery is hand-written;
+    # anything transferred keeps its own provenance and must still verify
+
+    def execute(self, inputs, ctx):
+        from . import analogy as A
+        mem = ctx["memory"]
+        cur = inputs.get("current_case")
+        if not cur:
+            raise OpError("missing current_case")
+        cases = [A.case_from_trace(json.loads(r["trace"]))
+                 for r in mem.query(
+                     "SELECT trace FROM cog_tasks WHERE status='verified'")]
+        # never retrieve the current task itself or the caller's test rows
+        exclude = set(inputs.get("exclude_task_ids", []))
+        exclude.add(cur.get("task_id", ""))
+        cases = [c for c in cases if c["task_id"] not in exclude]
+        ranked = A.retrieve(cur, cases,
+                            feedback=mem.feedback_adjustments())
+        return {"ranked": ranked}
+
+    def validate(self, inputs, outputs, ctx):
+        return True, f"{len(outputs.get('ranked', []))} candidate(s) ranked"
+
+
 REGISTRY = {c.name: c for c in (
     RetrieveConcepts, QueryAttribute, ApplyRule, CompareExplanations,
     Compute, UpdateWorkingMemory, CheckResult, RaiseGap, Replan,
-    RetrieveRules, ApplyLearnedRule)}
+    RetrieveRules, ApplyLearnedRule, Analogize)}

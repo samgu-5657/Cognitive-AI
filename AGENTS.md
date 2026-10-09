@@ -75,6 +75,10 @@
   拼接，全参数校验）/`web/server.py`（FastAPI，127.0.0.1:8765，
   无 CDN/外部调用）/`web/static/`（原生三件套）/会话级 Session 隔离。
   UI 依赖可选（缺失不影响 CLI）。
+  5B 增加：`analogy.py`（结构签名/分解打分/角色映射/前置检查/移植执行，
+  阈值集中 `policy.ANALOGY_STRUCT_MIN`）/`operations.Analogize`/
+  `executor.solve_task_with_analogy`（精确覆盖→组合→平局拒绝→守卫迁移）/
+  `analogy_feedback` 表（纠正影响后续检索）/类比视图与纠正接口。
 
 ## 3. 数据与持久化
 

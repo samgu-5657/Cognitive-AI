@@ -222,3 +222,27 @@ def test_14_persistence_across_reopen(tmp_path):
         assert any("持久杯" in x["id"] or "持久杯" in x["name"]
                    for x in r["data"])
     app2.state.wb.close()
+
+
+def test_15_analogy_view_and_correction(client):
+    c, _ = client
+    s = c.post("/api/solve", json={"text": "计算3+4*2",
+                                   "session_id": "u"}).json()
+    assert s["ok"]
+    a = c.get("/api/analogies").json()
+    assert a["ok"] and isinstance(a["data"], list)
+    r = c.post("/api/analogies/correct",
+               json={"task_id": "t1", "candidate_task_id": "m1",
+                     "effect": "boost"}).json()
+    assert r["ok"] and r["data"]["feedback_id"]
+    bad = c.post("/api/analogies/correct",
+                 json={"task_id": "t1", "candidate_task_id": "m1",
+                       "effect": "explode"})
+    assert bad.status_code == 400
+
+
+def test_16_sidebar_font_is_dark():
+    css = open(os.path.join(os.path.dirname(__file__), "..", "src",
+                            "cognitive_ai", "web", "static",
+                            "style.css"), encoding="utf-8").read()
+    assert "#side button" in css and "color:#111" in css.replace(" ", "")

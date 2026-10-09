@@ -378,3 +378,243 @@ def load_trace(memory, task_id: str) -> dict | None:
     if not row:
         return None
     return json.loads(row["trace"])
+
+
+def solve_with_analogy(text: str, frame: dict, memory, ontology, reasoner,
+                       exclude_task_ids: list | None = None,
+                       step_inputs: dict | None = None) -> dict:
+    """Analogy-driven solving on top of the standard machinery.
+
+    1. Build the task + a dry plan skeleton for its structural case.
+    2. Retrieve verified memory cases by STRUCTURE (surface reported only).
+    3. Multiple supporters -> compare preconditions/evidence; ties refuse.
+    4. Transplant the winner's plan, execute with current inputs, verify.
+    5. Persist everything (mapping, checks, outcome) or refuse with a gap.
+    Default executor plans are untouched; this is the opt-in analogy path.
+    """
+    from . import analogy as A
+    from .operations import Analogize
+    task = build_task(text, frame, memory)
+    return solve_task_with_analogy(task, memory, ontology, reasoner,
+                                   exclude_task_ids, step_inputs)
+
+
+def solve_task_with_analogy(task: CognitiveTask, memory, ontology,
+                            reasoner, exclude_task_ids=None,
+                            step_inputs=None) -> dict:
+    """Analogy core over a ready-made task (structured goals welcome)."""
+    from . import analogy as A
+    from .operations import Analogize
+    trace: dict = {"task": task.to_dict(), "steps": [],
+                   "repairs": [], "gap": None, "failure_cause": None,
+                   "analogy": None}
+    if not task.is_actionable():
+        trace["failure_cause"] = "unparseable"
+        _sync(task, trace)
+        _persist(memory, task, trace)
+        return trace
+    ctx = _ctx(memory, ontology, reasoner)
+    dry = _make_plan(task)
+    cur = {"task_id": task.task_id, "task_type": task.task_type,
+           "goal_kind": (task.goal or {}).get("kind", ""),
+           "op_chain": [s.get("op") for s in dry],
+           "rule_chain": list((task.goal or {}).get("chain") or []),
+           "slots": {k: "any" for k in _task_slots(task)},
+           "input_text": task.input_text, "verified": False}
+    rec = Analogize().run({"current_case": cur,
+                           "exclude_task_ids": exclude_task_ids or []}, ctx)
+    trace["steps"].append(rec)
+    ranked = [r for r in rec["outputs"].get("ranked", []) if r["accepted"]]
+    if not ranked:
+        trace["failure_cause"] = "missing_rule"
+        trace["analogy"] = {"outcome": "refused",
+                            "reason": "no structurally related case",
+                            "ranked": rec["outputs"].get("ranked", [])}
+        _raise_gap_for(task, trace, memory)
+        task.status = "failed"
+        _sync(task, trace)
+        _persist(memory, task, trace)
+        return trace
+    # exact single cover: one candidate's rule chain IS the goal chain
+    top = ranked[0]
+    goal_chain = list((task.goal or {}).get("chain") or [])
+    exact = [r for r in ranked
+             if r["candidate"].get("rule_chain", []) == goal_chain
+             and goal_chain]
+    if len(exact) == 1:
+        return _transfer_rules(task, trace, ctx, memory,
+                               exact[0]["candidate"]["task_id"],
+                               exact[0]["candidate"].get("rule_chain", []),
+                               top, step_inputs)
+    if len(exact) > 1:
+        return _refuse(task, trace, memory, "duplicate covering cases",
+                       [r["candidate"]["task_id"] for r in exact])
+    # composed cover from several accepted cases (novel combination)
+    composed = compose_for_goal(ranked, goal_chain)
+    if composed:
+        return _transfer_rules(task, trace, ctx, memory,
+                               composed["sources"][0],
+                               composed["rules"], top, step_inputs,
+                               composed_sources=composed["sources"])
+    # conflicting supporters: compare evidence; unbreakable ties refuse
+    rivals = [r for r in ranked[1:]
+              if abs(r["score"] - top["score"]) < 0.05
+              and _plan_differs(r, top)]
+    if rivals:
+        return _refuse(
+            task, trace, memory, "conflicting supporters; tie kept",
+            [top["candidate"]["task_id"]] +
+            [r["candidate"]["task_id"] for r in rivals])
+    if goal_chain:
+        # explicit chain, no full cover: partial application refused
+        return _refuse(task, trace, memory,
+                       "no verified case covers the goal chain",
+                       [r["candidate"]["task_id"] for r in ranked[:3]])
+    # no explicit chain: transfer the winner's own solution
+    winner_chain = top["candidate"].get("rule_chain", [])
+    if winner_chain and task.task_type == "math":
+        return _transfer_rules(task, trace, ctx, memory,
+                               top["candidate"]["task_id"], winner_chain,
+                               top, step_inputs)
+    src_id = top["candidate"]["task_id"]
+    src_trace = load_trace(memory, src_id)
+    plan = A.transplant_plan(src_trace, top["mapping"])
+    auto_inputs = _inputs_for(task, plan)
+    if step_inputs:
+        # caller-supplied current inputs win (e.g. resolved concepts)
+        auto_inputs = {**auto_inputs, **step_inputs}
+    trec = A.run_transfer(task, plan, auto_inputs, ctx, src_id,
+                          top["mapping"])
+    trace["analogy"] = trec
+    trace["steps"].extend(trec["steps"])
+    if trec["outcome"] == "verified":
+        task.status = "verified"
+    else:
+        task.status = "failed"
+        trace["failure_cause"] = "verify_failed"
+        _raise_gap_for(task, trace, memory)
+    memory.add_experience(
+        "evaluation", f"analogy {trec['outcome']}: {src_id} -> "
+        f"{task.task_id}",
+        {"source_task": src_id, "mapping": top["mapping"],
+         "structural": top["structural"], "surface": top["surface"]})
+    _sync(task, trace)
+    _persist(memory, task, trace)
+    return trace
+
+
+def _task_slots(task: CognitiveTask) -> list[str]:
+    slots = []
+    for ent in task.goal.get("entities", []):
+        slots.append("entity")
+    g = task.goal
+    if g.get("kind") in ("arithmetic", "linear", "derivative"):
+        slots.append("expression" if g.get("expression") else "number")
+    if g.get("kind") == "transform":
+        # canonical apply_learned roles (matches case signatures)
+        slots += ["rule", "input"]
+    return slots or ["none"]
+
+
+def _plan_differs(a: dict, b: dict) -> bool:
+    if a["candidate"].get("op_chain") != b["candidate"].get("op_chain"):
+        return True
+    return a["candidate"].get("rule_chain", []) != \
+        b["candidate"].get("rule_chain", [])
+
+
+def _inputs_for(task: CognitiveTask, plan: list[dict]) -> dict:
+    """Current-task inputs keyed by op for transplanted steps."""
+    per_op: dict[str, dict] = {}
+    g = task.goal
+    if g.get("kind") in ("arithmetic", "linear", "derivative"):
+        per_op["compute"] = {"kind": g["kind"],
+                             "expression": g.get("expression", ""),
+                             "var": g.get("var", "x")}
+    if g.get("kind") == "transform":
+        per_op["apply_learned"] = {"domain": g.get("domain", "math"),
+                                   "chain": g.get("chain"),
+                                   "inputs": g.get("inputs", {})}
+    return per_op
+
+
+def compose_for_goal(ranked_accepted, goal_chain):
+    from .analogy import compose_for_goal as _compose
+    return _compose(ranked_accepted, goal_chain)
+
+
+def _refuse(task, trace, memory, reason, candidates):
+    trace["analogy"] = {"outcome": "refused", "reason": reason,
+                        "candidates": candidates}
+    trace["failure_cause"] = "verify_failed"
+    _raise_gap_for(task, trace, memory)
+    task.status = "failed"
+    _sync(task, trace)
+    _persist(memory, task, trace)
+    return trace
+
+
+def _transfer_rules(task, trace, ctx, memory, src_id, rules, top,
+                    step_inputs, composed_sources=None):
+    """Execute a rule chain through the standard op + verification."""
+    from . import analogy as A
+    from .operations import ApplyLearnedRule, CheckResult
+    mem = ctx["memory"]
+    per_op = {"apply_learned": ((step_inputs or {}).get("apply_learned")
+                                or {})}
+    ok_pre, missing = A.check_transfer_preconditions(
+        {}, [{"op": "apply_learned"}], per_op)
+    if not ok_pre:
+        trec = {"source_task_id": src_id,
+                "composed_sources": composed_sources,
+                "current_task_id": task.task_id, "mapping": top["mapping"],
+                "structural": top["structural"], "surface": top["surface"],
+                "rules": rules, "checks": [{"preconditions": False,
+                                            "missing": missing}],
+                "outcome": "refused",
+                "reason": f"missing preconditions: {missing}"}
+        trace["analogy"] = trec
+        task.status = "failed"
+        trace["failure_cause"] = "verify_failed"
+        _raise_gap_for(task, trace, memory)
+        mem.add_experience(
+            "evaluation", f"analogy refused: {src_id} -> {task.task_id}",
+            {"source_task": src_id, "missing": missing})
+        _sync(task, trace)
+        _persist(memory, task, trace)
+        return trace
+    rec = ApplyLearnedRule().run(
+        {"domain": (task.goal or {}).get("domain", "math"), "chain": rules,
+         "inputs": ((step_inputs or {}).get("apply_learned") or {}).get(
+             "inputs", {})},
+        ctx)
+    trace["steps"].append(rec)
+    chk = CheckResult().run(
+        {"check": {"kind": "nonempty",
+                   "value": rec.get("outputs", {}).get("applied", [])}},
+        ctx)
+    trace["steps"].append(chk)
+    ok = rec["status"] == "verified" and chk["status"] == "verified"
+    trec = {"source_task_id": src_id, "composed_sources": composed_sources,
+            "current_task_id": task.task_id, "mapping": top["mapping"],
+            "structural": top["structural"], "surface": top["surface"],
+            "rules": rules, "checks": [{"rules_verified": ok}],
+            "outcome": "verified" if ok else "failed",
+            "reason": "composed/transferred rule chain verified"
+                      if ok else "rule chain failed verification"}
+    trace["analogy"] = trec
+    if ok:
+        task.status = "verified"
+    else:
+        task.status = "failed"
+        trace["failure_cause"] = "verify_failed"
+        _raise_gap_for(task, trace, memory)
+    mem.add_experience(
+        "evaluation", f"analogy {trec['outcome']}: {src_id} -> "
+        f"{task.task_id}",
+        {"source_task": src_id, "mapping": top["mapping"],
+         "structural": top["structural"], "surface": top["surface"],
+         "rules": rules})
+    _sync(task, trace)
+    _persist(memory, task, trace)
+    return trace

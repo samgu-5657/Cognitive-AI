@@ -23,6 +23,7 @@
   <button data-p="queue">待审队列</button>
   <button data-p="explore">自主探索</button>
   <button data-p="history">认知历史</button>
+  <button data-p="analogy">类比迁移</button>
   <button data-p="model">模型与状态</button>
 </nav>
 <main>
@@ -82,6 +83,13 @@
   <button id="h-tasks">任务列表</button><input id="h-tid" placeholder="任务id">
   <button id="h-task">查看轨迹</button></div>
   <div id="history-out" class="log"></div>
+</section>
+<section id="p-analogy" class="page">
+  <h2>类比迁移（真实执行记录：来源/映射/检查/结果）</h2>
+  <div class="row"><button id="a-go">刷新</button>
+  <input id="a-task" placeholder="任务id"><input id="a-cand" placeholder="候选任务id">
+  <input id="a-eff" placeholder="boost|penalize"><button id="a-fix">纠正映射</button></div>
+  <div id="analogy-out" class="log"></div>
 </section>
 <section id="p-model" class="page">
   <h2>模型与系统状态</h2>

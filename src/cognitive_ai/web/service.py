@@ -303,6 +303,50 @@ class Workbench:
             raise ValueError(out.get("error", "review failed"))
         return out
 
+    # ---- analogies (real transfer records, never invented) ----
+    def analogies(self, limit: int = 30) -> list:
+        import json
+        rows = self.mem.query(
+            "SELECT task_id,task_type,status FROM cog_tasks ORDER BY "
+            "rowid DESC LIMIT ?", (max(1, min(int(limit), 200)),))
+        out = []
+        for r in rows:
+            from ..executor import load_trace
+            tr = load_trace(self.mem, r["task_id"])
+            if tr and tr.get("analogy"):
+                a = tr["analogy"]
+                out.append({"task_id": r["task_id"],
+                            "task_type": r["task_type"],
+                            "status": r["status"],
+                            "outcome": a.get("outcome"),
+                            "reason": a.get("reason"),
+                            "source_task_id": a.get("source_task_id"),
+                            "composed_sources": a.get("composed_sources"),
+                            "mapping": a.get("mapping"),
+                            "structural": a.get("structural"),
+                            "surface": a.get("surface"),
+                            "rules": a.get("rules"),
+                            "checks": a.get("checks")})
+        return out
+
+    def analogy_correct(self, task_id: str, candidate_task_id: str,
+                        effect: str) -> dict:
+        if effect not in ("boost", "penalize"):
+            raise ValueError("bad parameter: effect "
+                             "(boost|penalize)")
+        _req_str(task_id, "task_id")
+        _req_str(candidate_task_id, "candidate_task_id")
+        fid = self.mem.add_feedback(
+            task_id, candidate_task_id,
+            {"candidate_task_id": candidate_task_id, "effect": effect,
+             "by": "web"})
+        self.mem.add_experience(
+            "evaluation",
+            f"web analogy correction: {effect} {candidate_task_id}",
+            {"op": "analogy_feedback", "task_id": task_id,
+             "feedback_id": fid})
+        return {"ok": True, "feedback_id": fid}
+
     def explore(self, steps: int = 3) -> dict:
         from ..loop import ExplorationLoop
         steps = _req_int(steps, "steps", 1, MAX_STEPS)

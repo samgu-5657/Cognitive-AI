@@ -274,6 +274,25 @@ def create_app(data_dir: str, models_root: str | None = None):
         except Exception as e:  # noqa: BLE001
             return fail(e, 500)
 
+    @app.get("/api/analogies")
+    def api_analogies(limit: int = 30):
+        try:
+            return ok(wb.analogies(limit))
+        except Exception as e:  # noqa: BLE001
+            return fail(e, 500)
+
+    @app.post("/api/analogies/correct")
+    async def api_analogy_correct(req: Request):
+        try:
+            b = await req.json()
+            return ok(wb.analogy_correct(b.get("task_id", ""),
+                                         b.get("candidate_task_id", ""),
+                                         b.get("effect", "")))
+        except ValueError as e:
+            return fail(e)
+        except Exception as e:  # noqa: BLE001
+            return fail(e, 500)
+
     @app.get("/api/model")
     def api_model():
         try:
