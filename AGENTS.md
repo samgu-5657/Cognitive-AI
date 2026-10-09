@@ -48,6 +48,10 @@
   3C 增加 `ood/discovery`：五态未知检测（maxprob/margin/原型距离/集成
   分歧，阈值只用 VAL 定）、候选概念发现（审核样本+特征内聚+LOO 验证，
   new_l2/new_l1/misplaced/evidence不足四路输出，L1 新类只做候选）。
+- `interact.py`: Phase 4A 交互教学 `Session.handle()`（纯逻辑，可测试）
+  + `chat` REPL（UTF-8）。五种操作 observation/training_label/
+  hypothesis/correction/research_request 互不替代；不可解析输入零写入；
+  教学走现有 learner/lifecycle/queue/loop，无平行记忆系统。
 - `cli.py`: 薄命令行封装，不放核心逻辑。
 
 ## 3. 数据与持久化

@@ -21,7 +21,9 @@ from cognitive_ai.schema_evolver import SchemaEvolver
 from cognitive_ai.learner import default_regression
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-DATA = os.path.join(ROOT, "data")
+# Isolated runs (tests, demos): point COGNITIVE_AI_DATA at a scratch dir
+# containing concepts.json + corpus/. Defaults to the project data dir.
+DATA = os.environ.get("COGNITIVE_AI_DATA") or os.path.join(ROOT, "data")
 DB = os.path.join(DATA, "cognitive.db")
 CORPUS = os.path.join(DATA, "corpus")
 SEED = os.path.join(DATA, "concepts.json")
@@ -62,6 +64,42 @@ def seed_from_json(mem: Memory, path: str) -> None:
     for rule in data.get("rules", []):
         mem.upsert_rule(rule)
     SchemaEvolver(mem).ensure_initial_version()
+
+
+def cmd_chat(_a):
+    import sys as _sys
+    try:
+        _sys.stdin.reconfigure(encoding="utf-8")
+        _sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+    from cognitive_ai.interact import Session
+    from cognitive_ai.schema_evolver import SchemaEvolver
+    mem = get_memory()
+    sess = Session(mem, CORPUS, models_root=os.path.join(ROOT, "models"),
+                   queue_path=os.path.join(DATA, "neural", "queue",
+                                           "unknown.jsonl"))
+    print("== Cognitive AI 交互教学 ==")
+    print(f"知识版本: v{SchemaEvolver(mem).current_version()}  "
+          f"概念数: {len(mem.list_concepts())}")
+    print(sess.handle("模型")[0])
+    print("输入'帮助'查看命令,'退出'结束。")
+    try:
+        while True:
+            try:
+                line = input("你> ")
+            except (EOFError, KeyboardInterrupt):
+                print()
+                line = "退出"
+            out = sess.handle(line)
+            for ln in out:
+                if ln == "__quit__":
+                    continue
+                print(ln)
+            if "__quit__" in out:
+                break
+    finally:
+        mem.close()
 
 
 def cmd_concepts(_a):
@@ -515,8 +553,9 @@ def cmd_doctor(_a):
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="cognitive_ai",
-                                description="Cognitive AI CLI (Phase 1)")
+                                description="Cognitive AI CLI")
     sub = p.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("chat").set_defaults(fn=cmd_chat)
     sub.add_parser("concepts").set_defaults(fn=cmd_concepts)
     s = sub.add_parser("inspect"); s.add_argument("id"); s.set_defaults(fn=cmd_inspect)
     s = sub.add_parser("observe"); s.add_argument("--json", default=None); s.add_argument("--json-file", default=None); s.set_defaults(fn=cmd_observe)

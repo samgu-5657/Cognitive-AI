@@ -1,0 +1,470 @@
+"""Interactive teaching session (Phase 4A).
+
+`Session` owns no I/O: `handle(line) -> list[str]` is pure logic over the
+shared Memory, fully testable. The `chat` REPL in cli.py only does
+print/input (UTF-8). Every mutating path reuses existing modules
+(learner / lifecycle / queue / gate / loop); nothing here writes around
+the evidence gates.
+
+Operation types (never substituted for each other):
+  observation    facts + source  -> learn_from_observation (hypothesis rows)
+  training_label reviewed labels -> UnknownQueue.review ONLY (no KB writes)
+  hypothesis     unverified idea -> Claim(status=hypothesis), no KB writes
+  correction     user fix        -> contested records + experience w/ reason
+  research_request               -> curiosity question or budgeted explore
+
+Unparseable input produces zero database writes.
+"""
+from __future__ import annotations
+
+import json
+import os
+
+from .curiosity import Curiosity
+from .learner import Learner
+from .memory import Memory
+from .novelty import NoveltyDetector, parse_chinese_simple
+from .ontology import Ontology
+from .reasoner import Reasoner
+
+ALIASES = {
+    "帮助": "help", "退出": "quit", "拜拜": "quit",
+    "概念": "concepts", "查看": "inspect", "分类": "predict",
+    "观察": "observe", "教": "teach", "标签": "label",
+    "假设": "hypothesis", "纠正": "correct", "探索": "explore",
+    "经历": "experiences", "历史": "history", "模型": "model",
+    "队列": "queue", "审核": "review", "状态": "state",
+    "取消": "cancel",
+}
+
+TEACH_STAGES = ("attrs", "function", "category", "done")
+
+
+class Session:
+    def __init__(self, memory: Memory, corpus_dir: str,
+                 models_root: str | None = None,
+                 queue_path: str | None = None):
+        self.mem = memory
+        self.learner = Learner(memory, corpus_dir)
+        self.onto = Ontology(memory)
+        self.reasoner = Reasoner(memory)
+        self.detector = NoveltyDetector(memory)
+        self.curiosity = Curiosity(memory)
+        self.models_root = models_root
+        self.queue_path = queue_path
+        self.pending_teach: dict | None = None
+        self._adapter = None
+        self._ood_bundle = "unloaded"
+
+    # ---- neural (lazy, optional) ----
+    def adapter(self):
+        if self._adapter is False:
+            return None
+        if self._adapter is not None:
+            return self._adapter
+        try:
+            from .neural.adapter import NeuralAdapter
+            from .neural.gate import read_active
+            tag = (read_active(self.models_root) or {}).get("tag", "cnn-v1") \
+                if self.models_root else "cnn-v1"
+            root = os.path.join(self.models_root or "models", tag)
+            self._adapter = NeuralAdapter(os.path.join(root, "best.pt"),
+                                          os.path.join(root, "vocab.json"))
+        except Exception:
+            self._adapter = False
+            return None
+        return self._adapter
+
+    def ood_bundle(self):
+        if self._ood_bundle != "unloaded":
+            return self._ood_bundle
+        self._ood_bundle = None
+        try:
+            if self.models_root:
+                from .neural.gate import read_active
+                tag = (read_active(self.models_root) or {}).get(
+                    "tag", "cnn-v1")
+                from .neural.ood import load_artifacts
+                arts = load_artifacts(
+                    os.path.join(self.models_root, tag))
+                if arts["prototypes.json"] and arts["ood_thresholds.json"]:
+                    self._ood_bundle = {
+                        "protos": arts["prototypes.json"],
+                        "thresholds": arts["ood_thresholds.json"],
+                        "temperature": 1.0}
+        except Exception:
+            self._ood_bundle = None
+        return self._ood_bundle
+
+    # ---- entry ----
+    def handle(self, line: str) -> list[str]:
+        line = (line or "").strip()
+        if not line:
+            return ["(空输入,已忽略)"]
+        if self.pending_teach and not line.split()[0] in (
+                "cancel", "取消", "quit", "退出"):
+            return self._teach_answer(line)
+        parts = line.split()
+        cmd = ALIASES.get(parts[0], parts[0]).lower()
+        args = parts[1:]
+        fn = {"help": self._help, "quit": self._quit,
+              "concepts": self._concepts, "inspect": self._inspect,
+              "predict": self._predict, "observe": self._observe,
+              "teach": self._teach, "label": self._label,
+              "hypothesis": self._hypothesis, "correct": self._correct,
+              "explore": self._explore, "experiences": self._experiences,
+              "history": self._history, "model": self._model,
+              "queue": self._queue, "review": self._review,
+              "state": self._state, "cancel": self._cancel}.get(cmd)
+        if fn is None:
+            return self._fallback(line)
+        try:
+            return fn(args)
+        except Exception as e:
+            return [f"执行出错(未写入可疑数据): {e}"]
+
+    # ---- help / quit ----
+    def _help(self, args) -> list[str]:
+        return [
+            "可用命令 (中文快捷等效):",
+            "  概念/concepts                 列出概念",
+            "  查看/inspect <id>             概念详情",
+            "  分类/predict <文本>           模型分类+未知判断+规则解释",
+            "  教/teach <名称>               分步教新事物(可随时取消)",
+            "  观察/observe <名称> k=v ...   直接记录结构化观察 [observation]",
+            "  标签/label <样本id> <L1> [L2] 审核训练标签 [training_label]",
+            "  假设/hypothesis <文本>        存假设,不写知识 [hypothesis]",
+            "  纠正/correct <名称> <属性> <新值> [原因]  纠错留痕 [correction]",
+            "  探索/explore [问题] [--steps N]  请求探索 [research_request]",
+            "  状态/state [名称]             显示认知状态与证据",
+            "  队列/queue [pending]  审核/review <id> -- 训练样本审核",
+            "  经历/历史/模型  experiences/history/model",
+            "  退出/quit  安全退出(数据已持久化)",
+        ]
+
+    def _quit(self, args) -> list[str]:
+        self.pending_teach = None
+        return ["__quit__", "再见,所有已保存数据都在数据库中。"]
+
+    def _cancel(self, args) -> list[str]:
+        self.pending_teach = None
+        return ["已取消当前教学,已记录的内容保留,未填的保持未知。"]
+
+    # ---- read paths ----
+    def _concepts(self, args) -> list[str]:
+        out = [f"{c['id']} [{c['kind']}] parents={self.mem.get_parents(c['id'])} "
+               f"name={c['name']}" for c in self.onto.list()]
+        return out or ["(空)"]
+
+    def _inspect(self, args) -> list[str]:
+        if not args:
+            return ["用法: 查看 <概念id>"]
+        try:
+            d = self.onto.describe(args[0])
+        except Exception as e:
+            return [f"查无此概念: {e}"]
+        lines = [f"{d['id']} name={d['name']} kind={d['kind']}",
+                 f"  parents={d['parents']} children={d['children']}"]
+        for a in d["attributes"]:
+            lines.append(f"  attr {a['key']}={a['value']} "
+                         f"[{a['status']}/{a['source']}]")
+        for r in d["relations"]:
+            lines.append(f"  rel -{r['rel_type']}-> {r['dst_id']} "
+                         f"[{r['status']}]")
+        return lines
+
+    def _experiences(self, args) -> list[str]:
+        n = int(args[0]) if args and args[0].isdigit() else 10
+        return [f"#{e['id']} [{e['kind']}] {e['summary']}"
+                for e in self.mem.list_experiences(limit=n)]
+
+    def _history(self, args) -> list[str]:
+        from .schema_evolver import SchemaEvolver
+        ev = SchemaEvolver(self.mem)
+        out = ["== versions =="]
+        out += [f"  v{v['version']}: {v['reason']}" for v in ev.versions()]
+        out += ["== changes =="]
+        out += [f"  #{c['id']} {c['kind']} {c['status']} "
+                f"v{c['version_before']}->v{c['version_after']} :: {c['reason']}"
+                for c in ev.history()]
+        return out
+
+    def _model(self, args) -> list[str]:
+        lines = []
+        ad = self.adapter()
+        if ad is None:
+            lines.append("神经网络模型不可用(未安装或无 checkpoint)。")
+        else:
+            lines.append(f"活动模型: {ad.version}")
+            if self.models_root:
+                try:
+                    from .neural.gate import read_active
+                    lines.append(f"active 指针: {read_active(self.models_root)}")
+                except Exception:
+                    pass
+        from .schema_evolver import SchemaEvolver
+        lines.append(f"知识版本: v{SchemaEvolver(self.mem).current_version()}")
+        return lines
+
+    def _queue(self, args) -> list[str]:
+        if not self.queue_path:
+            return ["队列未配置。"]
+        from .neural.queue import UnknownQueue
+        rows = UnknownQueue(self.queue_path).list(
+            status=args[0] if args else None)
+        out = [f"[{r['sample_id']}] {r['text']!r} conf={r['confidence']} "
+               f"review={r['review']['status']} label={r['label']}"
+               for r in rows]
+        return out or ["(队列为空)"]
+
+    def _review(self, args) -> list[str]:
+        # 审核 <id> <L1> [L2]  /  审核 <id> 拒绝
+        if len(args) < 1:
+            return ["用法: 审核 <样本id> <L1> [L2]  或  审核 <样本id> 拒绝"]
+        if not self.queue_path:
+            return ["队列未配置。"]
+        from .neural.queue import UnknownQueue
+        q = UnknownQueue(self.queue_path)
+        sid = args[0]
+        if len(args) == 2 and args[1] in ("拒绝", "reject"):
+            return [str(q.review(sid, accept=False))]
+        l1 = args[1] if len(args) > 1 else None
+        l2 = args[2] if len(args) > 2 else None
+        out = q.review(sid, accept=True, l1=l1, l2=l2, reviewer="chat")
+        self.mem.add_experience("evaluation", f"chat review {sid}: {out}",
+                                {"op": "training_label", **out})
+        return [str(out)]
+
+    # ---- predict + state (explanations from real structures) ----
+    def _predict(self, args) -> list[str]:
+        if not args:
+            return ["用法: 分类 <文本>"]
+        return self._explain(" ".join(args))
+
+    def _state(self, args) -> list[str]:
+        if not args:
+            return ["用法: 状态 <名称>"]
+        return self._explain(args[0], as_state=True)
+
+    def _explain(self, text: str, as_state: bool = False) -> list[str]:
+        lines = [f"输入: {text}"]
+        # 1. rule parse
+        parsed = parse_chinese_simple(text)
+        lines.append(f"规则解析: {parsed}")
+        # 2. KB match
+        matches = self.mem.find_concepts_by_name(text)
+        lines.append(f"概念匹配: {[c['id'] for c in matches] or '无(未知名称)'}")
+        # 3. neural candidate + OOD
+        ad = self.adapter()
+        if ad is None:
+            lines.append("模型分类: 不可用")
+        else:
+            try:
+                cand = ad.predict(text)
+                lines.append(f"模型分类: {cand['candidate_category']} "
+                             f"conf={cand['confidence']} "
+                             f"verdict={cand['verdict']} [{cand['model_version']}]")
+            except Exception as e:
+                lines.append(f"模型分类失败: {e}")
+                cand = None
+            bundle = self.ood_bundle()
+            if bundle:
+                try:
+                    from .neural.ood import assess
+                    second = None
+                    v = assess(text, ad.model, ad.vocab, bundle["protos"],
+                               bundle["temperature"], bundle["thresholds"],
+                               second=second)
+                    lines.append(f"未知判断: {v['verdict']} "
+                                 f"({' ; '.join(v.get('reasons', []))})")
+                except Exception as e:
+                    lines.append(f"未知判断失败: {e}")
+        # 4. rule classify verdict
+        cls = self.learner.classify({"name": text, "attributes": {}})
+        lines.append(f"规则归类: best={cls['best']} verdict={cls['verdict']}")
+        # 5. related knowledge for matches
+        for c in matches[:2]:
+            d = self.onto.describe(c["id"])
+            lines.append(f"已知[{c['id']}]: parents={d['parents']} "
+                         f"attrs={[(a['key'], a['value'], a['status']) for a in d['attributes']]}")
+        # 6. gaps
+        gaps = [g for g in self.detector.knowledge_gaps()
+                if not matches or g.get("concept") in [c["id"] for c in matches]]
+        if gaps:
+            lines.append(f"知识缺口(相关): {gaps[:5]}")
+        else:
+            lines.append("知识缺口(相关): 无")
+        lines.append("结论: 以上均来自实时查询,未做猜测;未知项保持未知。")
+        return lines
+
+    # ---- mutating ops, one type each ----
+    def _observe(self, args) -> list[str]:
+        # 观察 <名称> k=v ...   [observation]
+        if not args:
+            return ["用法: 观察 <名称> [属性=值 ...]"]
+        name, attrs = args[0], {}
+        for tok in args[1:]:
+            if "=" in tok or "：" in tok:
+                k, v = tok.replace("：", "=", 1).split("=", 1)
+                attrs[k.strip()] = v.strip()
+        res = self.learner.learn_from_observation(
+            {"name": name, "attributes": attrs, "source": "chat"})
+        nov = res.get("novelty", {})
+        lines = [f"[observation] 已记录观察 '{name}' (经历#{res.get('experience_id')})"]
+        lines.append(f"匹配概念: {nov.get('matched') or '无(未知名称)'}")
+        if nov.get("needs_new_concept"):
+            lines.append("新名称: 已建暂定概念,仍缺区分证据,保持未知部分。")
+        if nov.get("conflicts"):
+            lines.append(f"冲突(已保留双方,未覆盖): {nov['conflicts']}")
+        if res.get("new_concept", {}).get("id"):
+            lines.append(f"暂定概念: {res['new_concept']['id']}")
+        return lines
+
+    def _teach(self, args) -> list[str]:
+        # 教 <名称>  -> staged observation flow
+        if not args:
+            return ["用法: 教 <名称>  (随后按提示补充,不必一次答全)"]
+        name = args[0]
+        matches = self.mem.find_concepts_by_name(name)
+        self.pending_teach = {"name": name, "stage": "attrs",
+                              "known": bool(matches)}
+        lines = [f"[teach] 开始记录 '{name}'。"]
+        lines.append(f"已有概念: {[c['id'] for c in matches] or '无,这是新事物'}")
+        lines.append("请提供可观察的属性,形如: 材质=陶瓷 颜色=白 (直接回车跳过,未知保持未知)")
+        return lines
+
+    def _teach_answer(self, line: str) -> list[str]:
+        st = self.pending_teach
+        assert st is not None
+        stage = st["stage"]
+        if stage == "attrs":
+            attrs = {}
+            for tok in line.split():
+                if "=" in tok or "：" in tok:
+                    k, v = tok.replace("：", "=", 1).split("=", 1)
+                    if k.strip():
+                        attrs[k.strip()] = v.strip()
+            res = self.learner.learn_from_observation(
+                {"name": st["name"], "attributes": attrs, "source": "chat"})
+            st["stage"] = "function"
+            return [f"[observation] 属性已记 {attrs or '(跳过)'}",
+                    "它的功能/用途是什么? (如: 喝水 / 直接回车跳过)"]
+        if stage == "function":
+            if line.strip():
+                self.learner.learn_from_observation(
+                    {"name": st["name"], "attributes": {"function": line.strip()},
+                     "source": "chat"})
+                lines = [f"[observation] 功能已记: {line.strip()}"]
+            else:
+                lines = ["[observation] 功能跳过,保持未知。"]
+            st["stage"] = "category"
+            return lines + ["它属于哪类? (如: 容器 / 直接回车跳过)"]
+        if stage == "category":
+            want = line.strip()
+            pid = None
+            if want:
+                if self.mem.get_concept(want) is not None:
+                    pid = want
+                else:
+                    hits = self.mem.find_concepts_by_name(want)
+                    pid = hits[0]["id"] if hits else None
+            if want and pid is None:
+                # unknown parent: do NOT invent hierarchy; keep pending info
+                self.mem.add_experience(
+                    "observation", f"teach '{st['name']}' 提到未知类别 '{want}'",
+                    {"op": "observation", "pending_parent": want})
+                out = [f"[observation] 类别'{want}'暂无对应概念,已记为待确认,不虚构归属。"]
+            elif want:
+                self.mem.add_experience(
+                    "observation", f"teach '{st['name']}' 自述属于 {pid}",
+                    {"op": "observation", "claimed_parent": pid})
+                out = [f"[observation] 已记自述类别 {pid} (待证据确认,未改结构)。"]
+            else:
+                out = ["[observation] 类别跳过,保持未知。"]
+            st["stage"] = "done"
+            self.pending_teach = None
+            return out + ["教学暂告段落。可用'状态 <名称>'查看,未知项仍可后续补充。"]
+        self.pending_teach = None
+        return ["教学状态异常,已重置。"]
+
+    def _label(self, args) -> list[str]:
+        # 标签 <样本id> <L1> [L2]  [training_label: review only]
+        if len(args) < 2:
+            return ["用法: 标签 <样本id> <L1> [L2]  (只做审核,不写知识)"]
+        if not self.queue_path:
+            return ["队列未配置。"]
+        from .neural.queue import UnknownQueue
+        out = UnknownQueue(self.queue_path).review(
+            args[0], accept=True, l1=args[1],
+            l2=args[2] if len(args) > 2 else None, reviewer="chat")
+        self.mem.add_experience("evaluation", f"chat label {args[0]}: {out}",
+                                {"op": "training_label", **out})
+        return [f"[training_label] {out}",
+                "注意: 这只是审核标签,要训练模型请走 neural-incremental + 门禁。"]
+
+    def _hypothesis(self, args) -> list[str]:
+        # 假设 <文本>  [hypothesis: claim only]
+        if not args:
+            return ["用法: 假设 <文本>"]
+        text = " ".join(args)
+        cid = self.mem.add_claim(text, subject_id=None,
+                                 status="hypothesis", confidence=0.4)
+        self.mem.add_experience("observation", f"chat hypothesis #{cid}",
+                                {"op": "hypothesis", "claim_id": cid})
+        return [f"[hypothesis] 已存假设#{cid},未写入知识,待证据。"]
+
+    def _correct(self, args) -> list[str]:
+        # 纠正 <名称> <属性> <新值> [原因]  [correction]
+        if len(args) < 3:
+            return ["用法: 纠正 <名称> <属性> <新值> [原因]"]
+        name, key, new = args[0], args[1], args[2]
+        reason = " ".join(args[3:]) or "用户纠正"
+        res = self.learner.learn_from_observation(
+            {"name": name, "attributes": {key: new}, "source": "chat-correction"})
+        self.mem.add_experience(
+            "evaluation", f"chat correction: {name}.{key} -> {new}",
+            {"op": "correction", "reason": reason, "result": str(res)[:500]})
+        return [f"[correction] 已记录纠正并保留原值(原因: {reason})。",
+                "旧值未被静默覆盖,冲突双方可在'状态'中查看。"]
+
+    def _explore(self, args) -> list[str]:
+        # 探索 [问题] [--steps N]  [research_request, budgeted]
+        steps, words = 3, []
+        for i, a in enumerate(args):
+            if a == "--steps" and i + 1 < len(args) and args[i + 1].isdigit():
+                steps = min(int(args[i + 1]), 20)
+        words = [a for a in args if a != "--steps" and not a.isdigit()]
+        if words:
+            qid = self.mem.add_question(" ".join(words), "gap", None, 0.5,
+                                        "queued", {"source": "chat"})
+            self.mem.add_experience("evaluation", "chat research request",
+                                    {"op": "research_request",
+                                     "question_id": qid})
+            return [f"[research_request] 已加入研究队列#{qid}。"]
+        from .loop import ExplorationLoop
+        import os as _os
+        corp = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)),
+                             "..", "..", "data", "corpus")
+        out = ExplorationLoop(self.mem, corp).run(steps=steps,
+                                                  max_seconds=60.0)
+        lines = [f"[research_request] 探索 {out['steps_executed']} 步，用时{out['elapsed_s']}s"]
+        for e in out["log"]:
+            lines.append(f"  step{e.get('step')}: Q{e.get('question_id')} "
+                         f"{e.get('result')} action={e.get('action')}")
+        return lines
+
+    def _fallback(self, line: str) -> list[str]:
+        # try rule parse for X是Y / X有Y / X可以Z before giving up
+        parsed = parse_chinese_simple(line)
+        if parsed.get("parsed"):
+            k = parsed["kind"]
+            if k == "is_a":
+                return ["我识别出一种归属说法,但不能仅凭一句话改结构。",
+                        f"解析: {parsed}",
+                        f"请用'观察 {parsed['subj']} ...'补充属性,或用'假设'存为待验证想法。"]
+            return ["我识别出一种属性/能力说法,但需要结构化确认。",
+                    f"解析: {parsed}",
+                    "请用'观察 <名称> 属性=值'的格式重述,或用'假设'暂存。"]
+        return ["暂时无法理解这句话(只支持帮助中列出的命令与三种简单句式)。",
+                "请换一种表达,或用'观察 <名称> 属性=值'结构化输入。",
+                "本次未写入任何知识,未修改模型。"]
