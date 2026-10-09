@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cognitive AI 工作台</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header id="topbar">
+  <span class="logo">Cognitive AI</span>
+  <span id="hdr-model">模型: …</span>
+  <span id="hdr-kb">知识库: …</span>
+  <span id="hdr-task">最近任务: …</span>
+  <span id="hdr-net">服务: …</span>
+</header>
+<div id="layout">
+<nav id="side">
+  <button data-p="chat" class="on">对话与解题</button>
+  <button data-p="teach">教授知识</button>
+  <button data-p="rules">规则实验室</button>
+  <button data-p="concepts">概念网络</button>
+  <button data-p="queue">待审队列</button>
+  <button data-p="explore">自主探索</button>
+  <button data-p="history">认知历史</button>
+  <button data-p="model">模型与状态</button>
+</nav>
+<main>
+<section id="p-chat" class="page on">
+  <h2>对话与解题</h2>
+  <div class="row"><input id="chat-in" placeholder="输入问题或命令，如：解题 计算3+4*2">
+  <button id="chat-send">发送</button>
+  <button id="solve-send">解题</button></div>
+  <div id="chat-log" class="log"></div>
+</section>
+<section id="p-teach" class="page">
+  <h2>教授知识（预览→确认，假设永不直写 verified）</h2>
+  <div class="row"><input id="t-name" placeholder="名称，如 紫砂壶">
+  <input id="t-attrs" placeholder="属性 k=v,k=v，如 材质=陶瓷"></div>
+  <div class="row"><input id="t-parents" placeholder="候选类别 id，如 container（可空）">
+  <button id="t-preview">预览</button><button id="t-confirm">确认写入</button></div>
+  <div class="row"><input id="c-name" placeholder="纠正：名称">
+  <input id="c-key" placeholder="属性"><input id="c-val" placeholder="新值">
+  <input id="c-why" placeholder="原因"><button id="c-send">提交纠正</button></div>
+  <div id="teach-out" class="log"></div>
+</section>
+<section id="p-rules" class="page">
+  <h2>规则学习实验室</h2>
+  <div class="row"><input id="r-name" placeholder="规则名"><input id="r-domain" value="math">
+  <button id="r-list">刷新规则</button></div>
+  <div class="row"><textarea id="r-ex" placeholder="正例 JSONL：{&quot;id&quot;:&quot;a&quot;,&quot;inputs&quot;:{&quot;n&quot;:&quot;2&quot;},&quot;outputs&quot;:{&quot;out&quot;:&quot;4&quot;}}"></textarea></div>
+  <div class="row"><textarea id="r-neg" placeholder="反例 JSONL（可空）"></textarea></div>
+  <div class="row"><textarea id="r-held" placeholder="独立验证 JSONL"></textarea></div>
+  <div class="row"><button id="r-induce">1 归纳候选</button>
+  <button id="r-validate">2 验证</button><label><input type="checkbox" id="r-activate">通过则激活</label></div>
+  <div id="rules-out" class="log"></div>
+  <div id="rules-list" class="log"></div>
+</section>
+<section id="p-concepts" class="page">
+  <h2>概念网络（真实存储）</h2>
+  <div class="row"><input id="q-q" placeholder="搜索"><input id="q-kind" placeholder="类别">
+  <button id="q-go">搜索</button></div>
+  <div id="concepts-out" class="log"></div>
+</section>
+<section id="p-queue" class="page">
+  <h2>待审队列</h2>
+  <div class="row"><button id="qq-go">刷新</button>
+  <input id="qr-id" placeholder="样本id"><input id="qr-l1" placeholder="L1">
+  <input id="qr-l2" placeholder="L2"><button id="qr-ok">接受</button>
+  <button id="qr-no">拒绝</button></div>
+  <div id="queue-out" class="log"></div>
+</section>
+<section id="p-explore" class="page">
+  <h2>自主探索（有预算）</h2>
+  <div class="row"><input id="e-steps" value="3"><button id="e-go">运行</button>
+  <button id="e-gaps">查看缺口</button></div>
+  <div id="explore-out" class="log"></div>
+</section>
+<section id="p-history" class="page">
+  <h2>认知历史</h2>
+  <div class="row"><button id="h-go">刷新经历/版本/修改</button>
+  <button id="h-tasks">任务列表</button><input id="h-tid" placeholder="任务id">
+  <button id="h-task">查看轨迹</button></div>
+  <div id="history-out" class="log"></div>
+</section>
+<section id="p-model" class="page">
+  <h2>模型与系统状态</h2>
+  <div class="row"><button id="m-go">刷新</button>
+  <input id="p-text" placeholder="分类文本"><button id="p-go">分类预测</button></div>
+  <div id="model-out" class="log"></div>
+</section>
+</main>
+</div>
+<script src="/static/app.js"></script>
+</body>
+</html>

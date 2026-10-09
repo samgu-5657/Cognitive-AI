@@ -27,6 +27,7 @@ DATA = os.environ.get("COGNITIVE_AI_DATA") or os.path.join(ROOT, "data")
 DB = os.path.join(DATA, "cognitive.db")
 CORPUS = os.path.join(DATA, "corpus")
 SEED = os.path.join(DATA, "concepts.json")
+MODELS = os.environ.get("COGNITIVE_AI_MODELS") or os.path.join(ROOT, "models")
 
 
 def get_memory() -> Memory:
@@ -76,7 +77,7 @@ def cmd_chat(_a):
     from cognitive_ai.interact import Session
     from cognitive_ai.schema_evolver import SchemaEvolver
     mem = get_memory()
-    sess = Session(mem, CORPUS, models_root=os.path.join(ROOT, "models"),
+    sess = Session(mem, CORPUS, models_root=MODELS,
                    queue_path=os.path.join(DATA, "neural", "queue",
                                            "unknown.jsonl"))
     print("== Cognitive AI 交互教学 ==")
@@ -230,7 +231,7 @@ def cmd_promote(a):
 
 
 def _neural_paths(a):
-    root = os.path.join(ROOT, "models", getattr(a, "tag", "cnn-v1"))
+    root = os.path.join(MODELS, getattr(a, "tag", "cnn-v1"))
     return root
 
 
@@ -522,6 +523,28 @@ def cmd_neural_rollback(_a):
                      ensure_ascii=False, indent=2))
 
 
+def cmd_ui(a):
+    try:
+        from cognitive_ai.web.server import create_app
+    except RuntimeError as e:
+        print(str(e))
+        raise SystemExit(2)
+    import uvicorn
+    host = "127.0.0.1"
+    port = a.port
+    if not (1 <= port <= 65535):
+        print("拒绝: 端口超出范围。")
+        raise SystemExit(2)
+    print(f"Cognitive AI 工作台启动中…\n  地址: http://{host}:{port}/\n"
+          f"  数据目录: {DATA}\n  模型目录: {MODELS}")
+    app = create_app(DATA, MODELS)
+    try:
+        uvicorn.run(app, host=host, port=port, log_level="warning")
+    except OSError as e:
+        print(f"启动失败(端口可能被占用): {e}")
+        raise SystemExit(1)
+
+
 def cmd_neural_cycle(a):
     from cognitive_ai.neural.adapter import NeuralAdapter
     from cognitive_ai.neural.cycle import cycle_predict, maybe_train
@@ -680,6 +703,8 @@ def build_parser() -> argparse.ArgumentParser:
                                 description="Cognitive AI CLI")
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("chat").set_defaults(fn=cmd_chat)
+    s = sub.add_parser("ui"); s.add_argument("--port", type=int, default=8765)
+    s.set_defaults(fn=cmd_ui)
     sub.add_parser("concepts").set_defaults(fn=cmd_concepts)
     s = sub.add_parser("inspect"); s.add_argument("id"); s.set_defaults(fn=cmd_inspect)
     s = sub.add_parser("observe"); s.add_argument("--json", default=None); s.add_argument("--json-file", default=None); s.set_defaults(fn=cmd_observe)

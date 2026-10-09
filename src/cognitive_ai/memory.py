@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import threading
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -173,7 +174,11 @@ class Memory:
     def __init__(self, path: str):
         self.path = path
         os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-        self.conn = sqlite3.connect(path)
+        # check_same_thread=False + a lock: the server serves requests on
+        # worker threads sharing this connection. All access goes through
+        # execute()/query() below, both locked.
+        self.conn = sqlite3.connect(path, check_same_thread=False)
+        self.lock = threading.RLock()
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys=ON")
         self.conn.executescript(SCHEMA_SQL)
@@ -187,26 +192,30 @@ class Memory:
     def _migrate(self) -> None:
         """Backward-compatible migrations: additive only, never rewrite data."""
         cols = {r["name"] for r in self.query("PRAGMA table_info(evidences)")}
-        for name, ddl in EVIDENCE_MIGRATION_COLUMNS:
-            if name not in cols:
-                self.conn.execute(
-                    f"ALTER TABLE evidences ADD COLUMN {name} {ddl}")
-        self.conn.commit()
+        with self.lock:
+            for name, ddl in EVIDENCE_MIGRATION_COLUMNS:
+                if name not in cols:
+                    self.conn.execute(
+                        f"ALTER TABLE evidences ADD COLUMN {name} {ddl}")
+            self.conn.commit()
 
     # ---- generic helpers ----
     def execute(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
-        cur = self.conn.execute(sql, params)
-        self.conn.commit()
-        return cur
+        with self.lock:
+            cur = self.conn.execute(sql, params)
+            self.conn.commit()
+            return cur
 
     def query(self, sql: str, params: tuple = ()) -> list[dict]:
-        cur = self.conn.execute(sql, params)
-        return [dict(r) for r in cur.fetchall()]
+        with self.lock:
+            cur = self.conn.execute(sql, params)
+            return [dict(r) for r in cur.fetchall()]
 
     def query_one(self, sql: str, params: tuple = ()) -> Optional[dict]:
-        cur = self.conn.execute(sql, params)
-        row = cur.fetchone()
-        return dict(row) if row else None
+        with self.lock:
+            cur = self.conn.execute(sql, params)
+            row = cur.fetchone()
+            return dict(row) if row else None
 
     # ---- meta ----
     def get_meta(self, key: str) -> Optional[str]:

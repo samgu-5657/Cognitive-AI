@@ -71,6 +71,10 @@
   （`apply_rule(*)` 接入概念主流程）/ `学规则`+`rule-induce/validate/
   select/list/show/rollback` 命令。
 - `cli.py`: 薄命令行封装，不放核心逻辑。
+- 5A 工作台：`web/service.py`（唯一后端入口，直调业务模块，禁 shell/命令
+  拼接，全参数校验）/`web/server.py`（FastAPI，127.0.0.1:8765，
+  无 CDN/外部调用）/`web/static/`（原生三件套）/会话级 Session 隔离。
+  UI 依赖可选（缺失不影响 CLI）。
 
 ## 3. 数据与持久化
 
