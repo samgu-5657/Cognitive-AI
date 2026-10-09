@@ -238,12 +238,18 @@ def test_abc_experiment(tmp_path):
                     "verified":
                 reg_ok = False
         report[arm] = {"rows": rows, "regression_ok": reg_ok,
-                       "score": sum(1 for r in rows if r["correct"])}
+                       "score": sum(1 for r in rows if r["correct"]),
+                       "false_verified": sum(
+                           1 for r in rows if r["ok"] and r["want"] and
+                           r["answer"] != r["want"]),
+                       "refused": sum(1 for r in rows if not r["ok"])}
         mem.close()
     print("\nANALOGY A/B/C (5 frozen tasks + old regression):")
     for arm in ("A", "B", "C"):
         r = report[arm]
-        print(f"  {arm}: score={r['score']}/2 regression={r['regression_ok']}")
+        print(f"  {arm}: score={r['score']}/2 "
+              f"false_verified={r['false_verified']} "
+              f"refused={r['refused']} regression={r['regression_ok']}")
         for row in r["rows"]:
             print(f"    {row['id']}: ok={row['ok']} answer={row['answer']} "
                   f"want={row['want']}")
@@ -253,11 +259,15 @@ def test_abc_experiment(tmp_path):
     assert report["C"]["rows"][2]["correct"] is None   # t3 must refuse
     assert report["C"]["rows"][2]["ok"] is False
     assert report["C"]["rows"][3]["ok"] is False       # t4 missing input
-    # t5: chain unspecified. A first-matches a wrong-but-verified answer
-    # (documented hazard of chain-less goals); C must refuse the tie.
+    # t5: chain unspecified. Since Phase 5C the underspecified
+    # first-match can no longer complete verified (regression test in
+    # test_verify.py); A fails honestly here, C refuses the tie.
     assert report["C"]["rows"][4]["ok"] is False
     t5a = [r for r in report["A"]["rows"] if r["id"] == "t5"][0]
-    assert t5a["ok"] is True and t5a["answer"] != "15", t5a
+    assert t5a["ok"] is False, t5a
     assert report["A"]["regression_ok"] and report["C"]["regression_ok"]
     # B must exhibit at least one wrong transfer (honest naive baseline)
     assert report["B"]["score"] <= 1, report["B"]
+    # verification accounting, not just completion rates
+    assert report["C"]["false_verified"] == 0, report["C"]
+    assert report["B"]["false_verified"] >= 1, report["B"]

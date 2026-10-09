@@ -343,6 +343,24 @@ pytest tests/test_analogy.py tests/test_analogy_xfer.py -q
 诚实边界：签名粒度粗（操作骨架相同即难分），阈值 0.5 启发式；
 两网一致误判类比拦不住；小样本结论勿外推。
 
+## 独立验证与元认知（Phase 5C：验后定级 + 预算控制）
+
+```powershell
+pytest tests/test_verify.py tests/test_metacog.py -q
+```
+
+审计发现 op 级 verified（跑通）被直接冒充任务级正确；另 chain=None
+首配命中恒 verified（t5 输出 even 错误仍 verified，已立永久回归测试）。
+修复：`verify.py` 独立重推（数学重算/规则重跑/KB 重查/绑定一致/
+冲突检查）分 verified|inconclusive|rejected；未指定链恒 unverified；
+`metacog.py` 按执行记录决策（重试/换规则/类比/追问/缺口/拒绝），
+同因重复直接拒绝，预算耗尽收敛；所有完成轨迹验后定级，
+`explainer.provenance` 记录答案血缘。
+A/B/C（5 冻结任务）：A 2/2 + 3 诚实失败 0 错误verified；
+B 0/2 + 2 错误verified（表面移植无检查）；C 2/2 + 3 正确拒绝 0 错误；
+旧任务无退化。未覆盖场景：目标本身含糊时的确证标准、跨领域类比、
+长链组合的中间验证——仍可能 inconclusive，这是诚实上限。
+
 ## 下一阶段计划
 
 1. 更严格的研究证据门槛：同一结论需两个独立来源才进入知识库。

@@ -32,38 +32,79 @@ def solve_text(text: str, frame: dict, memory, ontology, reasoner,
     """Full loop for one input. Returns the persisted ExecutionTrace."""
     task = build_task(text, frame, memory)
     trace: dict = {"task": task.to_dict(), "steps": [],
-                   "repairs": [], "gap": None, "failure_cause": None}
+                   "repairs": [], "gap": None, "failure_cause": None,
+                   "verification": None, "metacog": []}
     if not task.is_actionable():
         trace["failure_cause"] = "unparseable"
         _sync(task, trace)
         _persist(memory, task, trace)
         return trace
+    from . import metacog, verify
     ctx = _ctx(memory, ontology, reasoner)
     plan = _make_plan(task)
     task.status = "running"
-    for attempt in range(max_repairs + 1):
+    budget = max_repairs + 1
+    attempts = 0
+    verification = None
+    while True:
         ok = _run_plan(task, plan, ctx, trace)
+        attempts += 1
         if ok:
-            task.status = "verified"
-            _sync(task, trace)
-            _persist(memory, task, trace)
-            return trace
+            verification = verify.verify_task(
+                task.to_dict(), trace["steps"], memory, ontology)
+            trace["verification"] = verification
+            if verification["verdict"] == "verified":
+                task.status = "verified"
+                _finalize(memory, task, trace)
+                return trace
+            if verification["verdict"] == "inconclusive":
+                task.status = "inconclusive"
+                trace["failure_cause"] = "verify_failed"
+                _raise_gap_for(task, trace, memory)
+                _finalize(memory, task, trace)
+                return trace
+            ok = False  # rejected: fall through to failure handling
         last = trace["steps"][-1] if trace["steps"] else {}
         cause = _classify_failure(task, last)
-        trace["repairs"].append({"attempt": attempt, "failed_op":
-                                 last.get("op"), "cause": cause})
-        if attempt < max_repairs:
+        if verification is not None and \
+                verification.get("verdict") == "rejected":
+            cause = "verify_failed"
+        decision = metacog.decide(task.to_dict(), trace["steps"],
+                                  verification, memory, attempts, budget)
+        trace["metacog"].append({**decision, "cause": cause,
+                                 "attempt": attempts})
+        if verification is not None and \
+                verification.get("verdict") == "rejected":
+            cause = "verify_failed"
+        trace["repairs"].append({"attempt": attempts, "failed_op":
+                                 last.get("op"), "cause": cause,
+                                 "decision": decision["action"]})
+        if decision["action"] == "switch_rule":
             alt = _alt_plan(task, plan, last.get("op"))
-            if alt:
+            if alt and attempts < budget:
                 plan = alt
+                verification = None
+                continue
+        if decision["action"] == "try_analogy":
+            tried = _solve_via_analogy_once(task, trace, ctx, memory,
+                                            ontology, reasoner)
+            if tried == "verified":
+                task.status = "verified"
+                _finalize(memory, task, trace)
+                return trace
+            attempts += 1
+            verification = None
+            if attempts < budget:
                 continue
         break
-    task.status = "failed"
-    trace["failure_cause"] = trace["repairs"][-1]["cause"] \
-        if trace["repairs"] else "verify_failed"
-    _raise_gap_for(task, trace, memory)
-    _sync(task, trace)
-    _persist(memory, task, trace)
+    if task.status != "inconclusive":
+        task.status = "failed"
+    if not trace["failure_cause"]:
+        trace["failure_cause"] = trace["repairs"][-1]["cause"] \
+            if trace["repairs"] else "verify_failed"
+    if trace["gap"] is None:
+        _raise_gap_for(task, trace, memory)
+    _finalize(memory, task, trace)
     return trace
 
 
@@ -347,7 +388,8 @@ def _raise_gap_for(task, trace, memory) -> None:
     }
     rec = {"op": "raise_gap", "status": "verified",
            "inputs": {"question": questions.get(cause, task.input_text),
-                      "failure": cause}}
+                      "failure": cause},
+           "basis": [], "outputs": {}}
     trace["steps"].append(rec)
     from .operations import RaiseGap
     out = RaiseGap().run({"question": rec["inputs"]["question"],
@@ -595,18 +637,32 @@ def _transfer_rules(task, trace, ctx, memory, src_id, rules, top,
         ctx)
     trace["steps"].append(chk)
     ok = rec["status"] == "verified" and chk["status"] == "verified"
+    verdict = None
+    if ok:
+        # independent goal verification before any verified claim
+        from . import verify
+        verdict = verify.verify_task(
+            task.to_dict(), trace["steps"], memory,
+            ctx.get("ontology"))["verdict"]
+        ok = verdict == "verified"
+    if ok:
+        outcome = "verified"
+    elif verdict == "inconclusive":
+        outcome = "inconclusive"
+    else:
+        outcome = "failed"
     trec = {"source_task_id": src_id, "composed_sources": composed_sources,
             "current_task_id": task.task_id, "mapping": top["mapping"],
             "structural": top["structural"], "surface": top["surface"],
             "rules": rules, "checks": [{"rules_verified": ok}],
-            "outcome": "verified" if ok else "failed",
+            "outcome": outcome,
             "reason": "composed/transferred rule chain verified"
-                      if ok else "rule chain failed verification"}
+                      if ok else f"rule chain not proven ({outcome})"}
     trace["analogy"] = trec
-    if ok:
+    if outcome == "verified":
         task.status = "verified"
     else:
-        task.status = "failed"
+        task.status = outcome if outcome == "inconclusive" else "failed"
         trace["failure_cause"] = "verify_failed"
         _raise_gap_for(task, trace, memory)
     mem.add_experience(
@@ -615,6 +671,69 @@ def _transfer_rules(task, trace, ctx, memory, src_id, rules, top,
         {"source_task": src_id, "mapping": top["mapping"],
          "structural": top["structural"], "surface": top["surface"],
          "rules": rules})
+    _finalize(memory, task, trace)
+    return trace
+
+
+def _finalize(memory, task, trace) -> None:
+    from .explainer import provenance
+    trace["provenance"] = provenance(trace)
     _sync(task, trace)
     _persist(memory, task, trace)
-    return trace
+
+
+def _solve_via_analogy_once(task, trace, ctx, memory, ontology,
+                            reasoner) -> str:
+    """One controller-approved analogy attempt inside a repair loop.
+
+    Quiet on gaps (the outer loop raises the single gap) but persists
+    the attempt trace for audit.
+    """
+    from . import analogy as A
+    dry = _make_plan(task)
+    cur = {"task_id": task.task_id + "+an",
+           "task_type": task.task_type,
+           "goal_kind": (task.goal or {}).get("kind", ""),
+           "op_chain": [s.get("op") for s in dry],
+           "rule_chain": list((task.goal or {}).get("chain") or []),
+           "slots": {k: "any" for k in _task_slots(task)},
+           "input_text": task.input_text, "verified": False}
+    from .operations import Analogize
+    rec = Analogize().run({"current_case": cur,
+                           "exclude_task_ids": [task.task_id]}, ctx)
+    trace["steps"].append(rec)
+    ranked = [r for r in rec["outputs"].get("ranked", []) if r["accepted"]]
+    if not ranked:
+        return "refused"
+    top = ranked[0]
+    goal_chain = list((task.goal or {}).get("chain") or [])
+    exact = [r for r in ranked
+             if r["candidate"].get("rule_chain", []) == goal_chain
+             and goal_chain]
+    if len(exact) == 1:
+        rules = exact[0]["candidate"].get("rule_chain", [])
+    else:
+        composed = A.compose_for_goal(ranked, goal_chain)
+        if not composed:
+            return "refused"
+        rules = composed["rules"]
+    from .operations import ApplyLearnedRule, CheckResult
+    auto = _inputs_for(task, [{"op": "apply_learned"}])
+    rec2 = ApplyLearnedRule().run(
+        {"domain": (task.goal or {}).get("domain", "math"), "chain": rules,
+         "inputs": (auto.get("apply_learned") or {}).get("inputs", {})},
+        ctx)
+    trace["steps"].append(rec2)
+    if rec2["status"] != "verified":
+        return "failed"
+    chk = CheckResult().run(
+        {"check": {"kind": "nonempty",
+                   "value": rec2.get("outputs", {}).get("applied", [])}},
+        ctx)
+    trace["steps"].append(chk)
+    if chk["status"] == "verified":
+        trace["analogy"] = {"outcome": "verified",
+                            "source_task_id": top["candidate"]["task_id"],
+                            "rules": rules, "mapping": top["mapping"]}
+        return "verified"
+    return "failed"

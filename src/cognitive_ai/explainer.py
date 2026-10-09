@@ -8,21 +8,31 @@ from __future__ import annotations
 
 
 def explain(trace: dict, style: str = "short") -> dict:
-    """Returns {text, certainty, citations}. certainty in
+    """Returns {text, certainty, citations, provenance}. certainty in
     {certain, qualified, unknown} derived from the trace, not asserted."""
     task = trace.get("task", {})
-    steps = trace.get("steps", [])
     status = task.get("status", "failed")
+    base = {"provenance": provenance(trace)}
+    if status == "inconclusive":
+        out = _explain_failure(trace)
+        out["text"] = "证据不足，结论未定：" + out["text"]
+        out.update(base)
+        return out
     if status != "verified":
-        return _explain_failure(trace)
+        out = _explain_failure(trace)
+        out.update(base)
+        return out
     if task.get("task_type") == "math":
-        return _explain_math(trace, style)
+        out = _explain_math(trace, style)
     if task.get("task_type") == "conceptual":
-        return _explain_conceptual(trace, style)
+        out = _explain_conceptual(trace, style)
     if task.get("task_type") == "logic":
-        return _explain_logic(trace, style)
-    return {"text": "任务类型未知,无法生成答案。", "certainty": "unknown",
-            "citations": []}
+        out = _explain_logic(trace, style)
+    if task.get("task_type") not in ("math", "conceptual", "logic"):
+        out = {"text": "任务类型未知,无法生成答案。", "certainty": "unknown",
+               "citations": []}
+    out.update(base)
+    return out
 
 
 def _cite(step: dict) -> str:
@@ -148,3 +158,37 @@ def _explain_failure(trace) -> dict:
         text += f"(缺口问题#{qid}已进入学习队列)"
     return {"text": text, "certainty": "unknown",
             "citations": [f"[failure:{cause}]"]}
+
+
+def provenance(trace: dict) -> dict:
+    """Structured answer lineage: task, conditions, evidence, checks,
+    unresolved items and the status timeline. Everything points back
+    into the persisted trace; nothing here is generated prose."""
+    task = trace.get("task", {})
+    facts, rules, unresolved = [], [], []
+    for s in trace.get("steps", []):
+        if s.get("op") == "query_attribute" and s.get("status") != "failed":
+            facts.append({"op": "query_attribute",
+                          "inputs": s.get("inputs", {}),
+                          "outputs": s.get("outputs", {})})
+        if s.get("op") in ("apply_rule", "apply_learned") and \
+                s.get("status") == "verified":
+            rules.append({"op": s["op"],
+                          "applied": (s.get("outputs", {}) or {}).get(
+                              "applied", s.get("outputs", {}).get("fired",
+                                                                  []))})
+    unresolved = list((task.get("unresolved_items") or []))
+    for g in (task.get("goal") or {}).get("premises", []) or []:
+        facts.append({"premise": g})
+    timeline = [(r.get("attempt"), r.get("decision"), r.get("cause"))
+                for r in trace.get("repairs", [])]
+    return {"task_id": task.get("task_id"),
+            "task_type": task.get("task_type"),
+            "goal": task.get("goal", {}),
+            "facts": facts, "rules": rules,
+            "checks": (trace.get("verification") or {}).get("checks", []),
+            "unresolved": unresolved,
+            "status": task.get("status"),
+            "status_timeline": timeline,
+            "failure_cause": trace.get("failure_cause"),
+            "gap_question": (trace.get("gap") or {}).get("question_id")}

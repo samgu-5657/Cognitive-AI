@@ -313,16 +313,21 @@ class ApplyLearnedRule(Operation):
     name = "apply_learned"
     origin = "induced_rule"
     # Runs ACTIVE LearnableRules through the restricted interpreter
-    # (never eval, never codegen). Supports single rule_id, domain-wide
-    # attempt, or an explicit chain [ids] threading outputs into inputs.
-    # Every application bumps the rule's invocation counters.
+    # (never eval, never codegen). Supports single rule_id or an explicit
+    # chain [ids] threading outputs into inputs. A domain-wide attempt
+    # WITHOUT an explicit chain first-matches by id order: kept for
+    # recall, but explicitly UNVERIFIED so callers cannot mistake a lucky
+    # first hit for a correct answer. Counters: calls always; successes
+    # only on verified runs; failures on non-ok applications.
+    UNSPECIFIED = "underspecified_chain"
 
     def execute(self, inputs, ctx):
         from . import rulelearn as RL
         mem = ctx["memory"]
         chain = inputs.get("chain") or \
             ([inputs["rule_id"]] if inputs.get("rule_id") else None)
-        if chain is None:
+        underspecified = chain is None
+        if underspecified:
             chain = [r["id"] for r in mem.list_rules_learned(
                 status="active", domain=inputs.get("domain"))]
         data = dict(inputs.get("inputs", {}))
@@ -347,7 +352,6 @@ class ApplyLearnedRule(Operation):
                                 ctx.get("ontology"))
             row["calls"] = row.get("calls", 0) + 1
             if res["status"] == "ok":
-                row["successes"] = row.get("successes", 0) + 1
                 applied.append({"rule_id": rid, "version": row["version"],
                                 "output": res["output"], "trace": res["trace"]})
                 mem.save_rule(row)
@@ -361,12 +365,22 @@ class ApplyLearnedRule(Operation):
                 mem.save_rule(row)
         if not applied:
             raise OpError("no active learned rule applied")
-        return {"applied": applied, "final": data}
+        return {"applied": applied, "final": data,
+                self.UNSPECIFIED: underspecified}
 
     def validate(self, inputs, outputs, ctx):
-        ok = bool(outputs.get("applied"))
-        return ok, f"{len(outputs.get('applied', []))} rule(s) applied" \
-            if ok else "nothing applied"
+        if not outputs.get("applied"):
+            return False, "nothing applied"
+        if outputs.get(self.UNSPECIFIED):
+            return False, ("chain unspecified: first-match result kept, "
+                           "marked unverified (not a verified answer)")
+        mem = ctx["memory"]
+        for app in outputs["applied"]:
+            row = mem.get_rule(app["rule_id"])
+            if row:
+                row["successes"] = row.get("successes", 0) + 1
+                mem.save_rule(row)
+        return True, f"{len(outputs['applied'])} rule(s) applied"
 
 
 class Analogize(Operation):

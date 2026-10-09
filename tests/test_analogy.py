@@ -228,7 +228,12 @@ def test_E_conflict_tie_refuses_then_feedback_resolves(tmp_path):
             struct_task(None, {"n": "5"}, "process five"), mem, onto, rsn,
             step_inputs={"apply_learned": {
                 "domain": "math", "chain": None, "inputs": {"n": "5"}}})
-        assert tr2["analogy"]["outcome"] == "verified", tr2["analogy"]
+        # feedback resolves WHICH case to use, but the chain-less goal still
+        # cannot be proven: honest outcome is inconclusive (executed, ran,
+        # answer unproven), never a forced verified
+        assert tr2["analogy"]["outcome"] == "inconclusive", tr2["analogy"]
+        assert tr2["task"]["status"] == "inconclusive"
+        assert tr2["gap"] is not None
     finally:
         mem.close()
 

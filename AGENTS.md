@@ -79,6 +79,9 @@
   阈值集中 `policy.ANALOGY_STRUCT_MIN`）/`operations.Analogize`/
   `executor.solve_task_with_analogy`（精确覆盖→组合→平局拒绝→守卫迁移）/
   `analogy_feedback` 表（纠正影响后续检索）/类比视图与纠正接口。
+  5C 增加：`verify.py`（独立重推验证，verified|inconclusive|rejected）/
+  `metacog.py`（预算控制器，禁无限重试）/执行器验后定级/
+  `explainer.provenance`（答案血缘）；未指定链首配恒 unverified。
 
 ## 3. 数据与持久化
 
