@@ -315,6 +315,29 @@ def cmd_neural_compare(a):
             print(f"[{tag}] unavailable: {e}")
 
 
+def cmd_neural_intent_train(a):
+    from cognitive_ai.neural.intent import (check_group_isolation,
+                                            load_rows, train_intent)
+    data = os.path.join(DATA, "semantics")
+    tr = load_rows(os.path.join(data, "train.jsonl"))
+    va = load_rows(os.path.join(data, "val.jsonl"))
+    te = load_rows(os.path.join(data, "test.jsonl"))
+    leak = check_group_isolation(("train", tr), ("val", va), ("test", te))
+    print(json.dumps({"leakage_check": leak}, ensure_ascii=False, indent=2))
+    if not leak["ok"]:
+        raise SystemExit("data leakage detected; refusing to train")
+    out = train_intent(tr, va, os.path.join(ROOT, "models", a.tag),
+                       seed=a.seed, epochs=a.epochs)
+    print(json.dumps(out, ensure_ascii=False, indent=2))
+
+
+def cmd_neural_intent_eval(a):
+    from cognitive_ai.neural.intent import (compare_rule_vs_net, load_rows)
+    te = load_rows(os.path.join(DATA, "semantics", "test.jsonl"))
+    rep = compare_rule_vs_net(te, os.path.join(ROOT, "models", a.tag))
+    print(json.dumps(rep["per_intent"], ensure_ascii=False, indent=2))
+
+
 def _queue_path():
     return os.path.join(DATA, "neural", "queue", "unknown.jsonl")
 
@@ -591,6 +614,11 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(fn=cmd_neural_predict)
     s = sub.add_parser("neural-compare"); s.add_argument("--tags", default="cnn-v1,gru-v1")
     s.set_defaults(fn=cmd_neural_compare)
+    s = sub.add_parser("neural-intent-train"); s.add_argument("--tag", default="intent-v1")
+    s.add_argument("--seed", type=int, default=21); s.add_argument("--epochs", type=int, default=60)
+    s.set_defaults(fn=cmd_neural_intent_train)
+    s = sub.add_parser("neural-intent-eval"); s.add_argument("--tag", default="intent-v1")
+    s.set_defaults(fn=cmd_neural_intent_eval)
     s = sub.add_parser("neural-queue"); s.add_argument("--status", default=None)
     s.add_argument("--limit", type=int, default=50); s.set_defaults(fn=cmd_neural_queue)
     s = sub.add_parser("neural-queue-show"); s.add_argument("sample_id")

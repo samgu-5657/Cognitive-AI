@@ -52,6 +52,12 @@
   + `chat` REPL（UTF-8）。五种操作 observation/training_label/
   hypothesis/correction/research_request 互不替代；不可解析输入零写入；
   教学走现有 learner/lifecycle/queue/loop，无平行记忆系统。
+  4B 增加：`理解/确认`（帧→预览→执行三段式）、会话上下文（持久、
+  可看可清、会话隔离）、纠正关联原判断、空属性归类 insufficient。
+- `semantics.py`: 组合式中文解析（槽位规则+词法 markers，非整句硬编码），
+  输出统一候选帧；否定/hedge/纠正/条件/量词/指代均有确定性规则与回退。
+- `neural/intent.py`: 微型意图分类网（只定意图，不产槽位/事实），
+  数据 `data/semantics/` 组隔离，规则-vs-网独立对比。
 - `cli.py`: 薄命令行封装，不放核心逻辑。
 
 ## 3. 数据与持久化

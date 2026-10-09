@@ -66,6 +66,7 @@ class Learner:
         """Full mini-cycle for one structured observation."""
         result: dict[str, Any] = {"observation": obs}
         seen = self.observe(obs)
+        result["experience_id"] = seen["experience_id"]
         result["novelty"] = seen["novelty"]
         name = obs.get("name", "")
         matches = self.mem.find_concepts_by_name(name)
@@ -342,12 +343,20 @@ class Learner:
         Score per concept: +1 per observed attr matching an inherited
         (key, value), -1 per value conflict, -0.25 per observed key the
         concept cannot explain, normalized by number of observed attrs.
-        The unexplained penalty keeps sparsely-described concepts from
-        winning ties against genuinely similar ones.
         Verdicts: 'match' (best >= threshold, no conflicts), 'ambiguous'
-        (best >= threshold but conflicts exist), 'novel' (nothing close).
+        (best >= threshold but conflicts exist), 'novel' (nothing close AND
+        positive difference evidence exists), 'insufficient' (too little
+        information to tell: empty input, or no matches AND no conflicts).
+        A missing database attribute is NEVER by itself proof of novelty.
         Never writes to the knowledge base.
         """
+        from .policy import CLASSIFY_MATCH_THRESHOLD
+        attrs: dict = obs.get("attributes", {}) or {}
+        if not attrs:
+            return {"verdict": "insufficient", "best": None, "ranking": [],
+                    "observation": obs.get("name"),
+                    "threshold": CLASSIFY_MATCH_THRESHOLD,
+                    "reason": "no attributes to compare"}
         from .policy import CLASSIFY_MATCH_THRESHOLD
         attrs: dict = obs.get("attributes", {}) or {}
         scored = []
@@ -379,8 +388,13 @@ class Learner:
                                        if d["kind"] == "match"]})
         scored.sort(key=lambda s: (-s["score"], s["concept"]))
         best = scored[0] if scored else None
+        # Nothing reaches the threshold: a conflict with ANY known concept
+        # is positive difference evidence (novel); with no matches AND no
+        # differences there is nothing to go on (insufficient). A missing
+        # database attribute is NEVER by itself proof of novelty.
+        any_conflict = any(s["conflicts"] for s in scored)
         if best is None or best["score"] < CLASSIFY_MATCH_THRESHOLD:
-            verdict = "novel"
+            verdict = "novel" if any_conflict else "insufficient"
         elif best["conflicts"]:
             verdict = "ambiguous"
         else:

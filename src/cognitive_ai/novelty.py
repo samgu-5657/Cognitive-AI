@@ -20,7 +20,8 @@ from .reasoner import Reasoner
 _PATTERNS = [
     (re.compile(r"^\s*(?P<subj>.+?)\s*是\s*(?P<obj>.+?)\s*[。；;]?\s*$"),
      "is_a"),
-    (re.compile(r"^\s*(?P<subj>.+?)\s*有\s*(?P<obj>.+?)\s*[。；;]?\s*$"),
+    (re.compile(r"^\s*(?P<subj>.+?)\s*有(?!意思|趣|空|点|些|所)"
+                r"\s*(?P<obj>.+?)\s*[。；;]?\s*$"),
      "has_feature"),
     (re.compile(r"^\s*(?P<subj>.+?)\s*(?:可以|能|用于|用来)\s*(?P<obj>.+?)\s*[。；;]?\s*$"),
      "capability"),

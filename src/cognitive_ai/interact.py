@@ -13,12 +13,18 @@ Operation types (never substituted for each other):
   correction     user fix        -> contested records + experience w/ reason
   research_request               -> curiosity question or budgeted explore
 
+Natural language (Phase 4B): 理解 <text> parses to a SemanticFrame
+(candidate only), shows the planned operation, and waits for 确认.
+Pronouns resolve against the per-session persisted context; ambiguous
+or failed parses produce zero knowledge writes.
+
 Unparseable input produces zero database writes.
 """
 from __future__ import annotations
 
 import json
 import os
+import uuid
 
 from .curiosity import Curiosity
 from .learner import Learner
@@ -26,6 +32,8 @@ from .memory import Memory
 from .novelty import NoveltyDetector, parse_chinese_simple
 from .ontology import Ontology
 from .reasoner import Reasoner
+from .semantics import (SemanticFrame, parse_sentence, resolve_frame,
+                        update_context)
 
 ALIASES = {
     "帮助": "help", "退出": "quit", "拜拜": "quit",
@@ -34,7 +42,8 @@ ALIASES = {
     "假设": "hypothesis", "纠正": "correct", "探索": "explore",
     "经历": "experiences", "历史": "history", "模型": "model",
     "队列": "queue", "审核": "review", "状态": "state",
-    "取消": "cancel",
+    "取消": "cancel", "理解": "understand", "确认": "confirm",
+    "上下文": "context", "清空上下文": "clear_context",
 }
 
 TEACH_STAGES = ("attrs", "function", "category", "done")
@@ -53,6 +62,8 @@ class Session:
         self.models_root = models_root
         self.queue_path = queue_path
         self.pending_teach: dict | None = None
+        self.pending_frame: dict | None = None
+        self.session_id = uuid.uuid4().hex[:12]
         self._adapter = None
         self._ood_bundle = "unloaded"
 
@@ -115,7 +126,10 @@ class Session:
               "explore": self._explore, "experiences": self._experiences,
               "history": self._history, "model": self._model,
               "queue": self._queue, "review": self._review,
-              "state": self._state, "cancel": self._cancel}.get(cmd)
+              "state": self._state, "cancel": self._cancel,
+              "understand": self._understand, "confirm": self._confirm,
+              "context": self._context, "clear_context": self._clear_context,
+              }.get(cmd)
         if fn is None:
             return self._fallback(line)
         try:
@@ -137,6 +151,9 @@ class Session:
             "  纠正/correct <名称> <属性> <新值> [原因]  纠错留痕 [correction]",
             "  探索/explore [问题] [--steps N]  请求探索 [research_request]",
             "  状态/state [名称]             显示认知状态与证据",
+            "  理解/understand <句子>        解析自然语言,显示将执行的操作",
+            "  确认/confirm                  执行待确认的解析(无待确认则空转)",
+            "  上下文/context  清空上下文/clear_context  会话指代记忆管理",
             "  队列/queue [pending]  审核/review <id> -- 训练样本审核",
             "  经历/历史/模型  experiences/history/model",
             "  退出/quit  安全退出(数据已持久化)",
@@ -328,6 +345,12 @@ class Session:
         matches = self.mem.find_concepts_by_name(name)
         self.pending_teach = {"name": name, "stage": "attrs",
                               "known": bool(matches)}
+        from .semantics import SemanticFrame as _F
+        self.mem.set_context(
+            self.session_id,
+            update_context(self.mem.get_context(self.session_id),
+                           _F(intent="observe",
+                              entities=[{"text": name, "role": "object"}])))
         lines = [f"[teach] 开始记录 '{name}'。"]
         lines.append(f"已有概念: {[c['id'] for c in matches] or '无,这是新事物'}")
         lines.append("请提供可观察的属性,形如: 材质=陶瓷 颜色=白 (直接回车跳过,未知保持未知)")
@@ -453,8 +476,190 @@ class Session:
                          f"{e.get('result')} action={e.get('action')}")
         return lines
 
+    # ---- natural language understanding (Phase 4B) ----
+    def _understand(self, args) -> list[str]:
+        # 理解 <句子>: parse -> resolve -> preview op, wait for 确认
+        if not args:
+            return ["用法: 理解 <中文句子>  (解析后用'确认'执行)"]
+        text = " ".join(args)
+        frame = parse_sentence(text, source="user")
+        state = self.mem.get_context(self.session_id)
+        frame = resolve_frame(frame, state)
+        if frame.intent == "unknown":
+            return ["暂时无法理解这句话(只支持帮助中列出的命令与常见陈述句式)。",
+                    f"解析痕迹: {frame.trace}",
+                    "请换一种表达,或用'观察 <名称> 属性=值'结构化输入。",
+                    "本次未写入任何知识,未修改模型。"]
+        self.mem.set_context(self.session_id, update_context(state, frame))
+        self.pending_frame = frame.to_dict()
+        lines = [f"原文: {text}",
+                 f"意图: {frame.intent}  模态: {frame.modality} "
+                 f"范围: {frame.scope}  置信度: {frame.confidence}",
+                 f"实体: {frame.entities}",
+                 f"谓词: {frame.predicates}"]
+        if frame.unresolved_references:
+            lines.append(f"未消解指代: {frame.unresolved_references}")
+        if frame.ambiguities:
+            lines.append(f"歧义/缺失: {frame.ambiguities}")
+        lines.append(f"来源: {frame.source}")
+        lines.append(f"将执行: {self._planned_op(frame)} "
+                     "(输入'确认'执行,'取消'放弃;确认前不写入)")
+        return lines
+
+    @staticmethod
+    def _planned_op(frame: SemanticFrame) -> str:
+        return {"classify": "observation(暂定概念+自述归属待证)",
+                "attribute": "observation(新属性记 hypothesis)",
+                "function": "observation(功能记 hypothesis)",
+                "negate": "denial 记录(Claim,不写属性)",
+                "hedge": "hypothesis(Claim,待证据)",
+                "correct": "correction(关联原判断,旧值保留)",
+                "causal": "hypothesis(条件句,不当事实)",
+                "observe": "observation(新实例暂定概念)",
+                "query": "只读解释(不写库)",
+                "unknown": "拒绝(不写库)"}.get(frame.intent, "拒绝(不写库)")
+
+    def _confirm(self, args) -> list[str]:
+        if not self.pending_frame:
+            return ["当前没有待确认的解析。先用'理解 <句子>'。"]
+        frame = self.pending_frame
+        self.pending_frame = None
+        # never execute while references are unresolved: it would create
+        # literal 它-concepts out of pronouns
+        if frame.get("unresolved_references"):
+            return [f"指代未消解{frame['unresolved_references']},拒绝执行(无写入)。",
+                    "请先说清对象,或用'观察 <名称> ...'直接指定。"]
+        if any("pronoun" in a for a in frame.get("ambiguities", [])):
+            return ["存在未澄清的指代歧义,拒绝执行(无写入)。",
+                    f"歧义: {frame['ambiguities']}",
+                    "请指明对象后重试。"]
+        return self._execute_frame(frame)
+
+    def _execute_frame(self, fr: dict) -> list[str]:
+        intent, modality = fr["intent"], fr["modality"]
+        if intent == "query":
+            ent = (fr["entities"] + [{}])[0].get("text", "")
+            return self._explain(ent or fr["raw"]) if ent else \
+                ["问题缺少可查询的实体。"]
+        if intent == "unknown":
+            return ["该解析不可执行,已放弃(无写入)。"]
+        if intent == "hedge" or modality == "possible":
+            preds = fr["predicates"]
+            text = f"{preds[0]}" if preds else fr["raw"]
+            cid = self.mem.add_claim(f"可能: {text}", subject_id=None,
+                                     status="hypothesis", confidence=0.4)
+            self.mem.add_experience("observation", f"nlu hedge #{cid}",
+                                    {"op": "hypothesis", "frame": fr})
+            return [f"[hypothesis] 不确定陈述已存#{cid},未当事实(置信度{fr['confidence']})。"]
+        if intent == "negate":
+            preds = fr["predicates"]
+            text = f"{preds[0]}" if preds else fr["raw"]
+            cid = self.mem.add_claim(f"否定: {text}", subject_id=None,
+                                     status="hypothesis", confidence=0.5)
+            self.mem.add_experience("observation", f"nlu denial #{cid}",
+                                    {"op": "hypothesis", "frame": fr,
+                                     "note": "denial recorded, no attribute written"})
+            return [f"[hypothesis] 否定已记录#{cid},未写入属性,未覆盖旧值。"]
+        if intent == "correct":
+            return self._execute_correction(fr)
+        if intent == "causal":
+            cid = self.mem.add_claim(f"条件: {fr['predicates']}",
+                                     subject_id=None, status="hypothesis",
+                                     confidence=0.4)
+            self.mem.add_experience("observation", f"nlu causal #{cid}",
+                                    {"op": "hypothesis", "frame": fr})
+            return [f"[hypothesis] 条件句已存#{cid},不当事实,待验证。"]
+        # classify / attribute / function / observe -> observation op
+        return self._execute_observation(fr)
+
+    def _execute_observation(self, fr: dict) -> list[str]:
+        attrs: dict = {}
+        parents: list[str] = []
+        name = ""
+        for p in fr["predicates"]:
+            t = p.get("type")
+            if t == "is_a" and not p.get("denied"):
+                name = name or p.get("subj", "")
+                obj = p.get("obj", "")
+                hit = self.mem.get_concept(obj) or \
+                    (self.mem.find_concepts_by_name(obj) or [None])[0]
+                if hit:
+                    parents.append(hit["id"])
+                else:
+                    self.mem.add_experience(
+                        "observation", f"nlu claimed parent '{obj}' unknown",
+                        {"op": "observation", "pending_parent": obj})
+            elif t == "attr" and not p.get("denied") and p.get("key"):
+                name = name or p.get("subj", "")
+                attrs[p["key"]] = p.get("value")
+            elif t == "capable" and not p.get("denied"):
+                name = name or p.get("subj", "")
+                attrs["function"] = p.get("action")
+            elif t == "has" and not p.get("denied"):
+                name = name or p.get("subj", "")
+                attrs[p.get("feature", "feature")] = True
+            elif t == "new_instance":
+                name = name or p.get("obj", "")
+        if not name and fr["entities"]:
+            name = fr["entities"][0]["text"]
+        if not name:
+            return ["无法确定主体,已放弃(无写入)。"]
+        res = self.learner.learn_from_observation(
+            {"name": name, "parents": parents, "attributes": attrs,
+             "source": "chat-nlu"})
+        return [f"[observation] 已记录'{name}' attrs={attrs} "
+                f"parents={parents or '未知(未虚构)'}",
+                f"经历#{res.get('experience_id')} "
+                f"novelty={str(res.get('novelty', {}))[:200]}"]
+
+    def _execute_correction(self, fr: dict) -> list[str]:
+        inner = (fr["predicates"] + [{}])[0].get("content") or {}
+        # same guard as 确认: unresolved pronouns must not become concepts
+        if inner.get("unresolved_references") or \
+                any("pronoun" in a for a in inner.get("ambiguities", [])):
+            self.mem.add_experience(
+                "evaluation", "nlu correction blocked: unresolved reference",
+                {"op": "correction", "frame": fr})
+            return ["纠正内容指代未消解,拒绝执行(无写入)。请先说清对象。"]
+        # antecedent: last session observation about the same entity
+        state = self.mem.get_context(self.session_id)
+        prior = None
+        want = {e["text"] for e in fr.get("entities", [])}
+        if state.get("last_observation"):
+            lo = state["last_observation"]
+            if want & set(lo.get("entities", [])):
+                prior = lo
+        lines = []
+        if inner and inner.get("intent") not in ("unknown", None):
+            lines += self._execute_frame({**inner, "source": "chat-correction"})
+        self.mem.add_experience(
+            "evaluation", f"nlu correction links prior={bool(prior)}",
+            {"op": "correction", "frame": fr, "antecedent": prior})
+        lines.append("纠正已关联原判断(见上);旧值保留,未静默覆盖。"
+                     if prior else "未找到明确原判断,已按新观察记录,请用'经历'核对。")
+        return lines
+
+    def _context(self, args) -> list[str]:
+        st = self.mem.get_context(self.session_id)
+        return [f"会话 {self.session_id} turn={st['turn']} "
+                f"entities={[e['text'] for e in st['entities']]}",
+                f"last_observation={st.get('last_observation')}"]
+
+    def _clear_context(self, args) -> list[str]:
+        self.mem.clear_context(self.session_id)
+        return ["当前会话上下文已清除(知识库不受影响)。"]
+
     def _fallback(self, line: str) -> list[str]:
-        # try rule parse for X是Y / X有Y / X可以Z before giving up
+        # try compositional parse before giving up; a parsed frame still
+        # needs explicit 确认 (use 理解 to keep one entry point)
+        try:
+            fr = parse_sentence(line, source="user")
+        except Exception:
+            fr = None
+        if fr is not None and fr.intent != "unknown":
+            return ["这句话不在命令表里,但我初步解析出结构:",
+                    f"意图={fr.intent} 模态={fr.modality} 实体={fr.entities}",
+                    "请用理解命令走确认流程(确认前不写入)。"]
         parsed = parse_chinese_simple(line)
         if parsed.get("parsed"):
             k = parsed["kind"]
@@ -465,6 +670,6 @@ class Session:
             return ["我识别出一种属性/能力说法,但需要结构化确认。",
                     f"解析: {parsed}",
                     "请用'观察 <名称> 属性=值'的格式重述,或用'假设'暂存。"]
-        return ["暂时无法理解这句话(只支持帮助中列出的命令与三种简单句式)。",
+        return ["暂时无法理解这句话(只支持帮助中列出的命令与常见陈述句式)。",
                 "请换一种表达,或用'观察 <名称> 属性=值'结构化输入。",
                 "本次未写入任何知识,未修改模型。"]

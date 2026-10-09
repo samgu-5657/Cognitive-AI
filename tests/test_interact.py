@@ -68,7 +68,7 @@ def test_unparseable_writes_nothing(tmp_path):
     sess, mem = make_session(tmp_path)
     try:
         before = counts(mem)
-        out = sess.handle("呃嗯随便说一句完全没结构的话呢哈哈")
+        out = sess.handle("呃嗯哈哈今天挺有意思的啊")
         assert any("无法理解" in l for l in out)
         assert counts(mem) == before
     finally:

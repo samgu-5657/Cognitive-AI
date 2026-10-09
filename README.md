@@ -219,6 +219,28 @@ py -m cognitive_ai.cli chat
 自由中文闲聊、指代消解、跨轮指代均不支持；类别名按 id/名称双查，
 未知归属永不虚构；单字/全未知串判 unjudgeable。
 
+## 组合式中文理解（Phase 4B：语义帧 + 上下文 + 意图网，CPU 可运行）
+
+```powershell
+py -m cognitive_ai.cli neural-intent-train --tag intent-v1
+py -m cognitive_ai.cli neural-intent-eval --tag intent-v1
+pytest tests/test_semantics.py -q
+```
+
+`semantics.py`：槽位组合规则（词法 markers + 通用槽 `{NP}是{NP}` 等，
+非整句硬编码）输出统一帧
+（intent/entities/predicates/modality/scope/source/confidence/
+unresolved/ambiguities）；否定用结构前瞻（不锈钢/不同不误伤）、
+hedge 提升后做槽匹配、纠正去嵌套、条件逗号兜底、量词清理。
+`chat` 内 `理解 <句>` 显示帧与将执行操作，`确认` 执行（未消解指代
+拒绝执行，曾抓到真 bug：代词成概念）；`纠正` 关联会话 last_observation；
+代词按会话上下文消解（多候选必问）；上下文落库可看可清，会话隔离。
+空属性归类恒 novel 已修：无属性/无冲突判 insufficient，无匹配有冲突
+才判 novel（缺属性≠新类别）。
+冻结 test 对比：规则 47/47=1.0，意图网 0.745（negate 0.375、
+unknown 0.0——无 unknown 训练样本，恒强制已知意图；职责分离的代价，
+如实报告）。
+
 ## 开放世界发现（Phase 3C：未知检测 + 候选概念，CPU 可运行）
 
 ```powershell

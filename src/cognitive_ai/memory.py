@@ -124,6 +124,12 @@ CREATE TABLE IF NOT EXISTS lifecycle_events(
   evidence TEXT NOT NULL DEFAULT '[]',
   created_at TEXT NOT NULL
 );
+-- Phase 4B: per-session dialogue context (additive)
+CREATE TABLE IF NOT EXISTS dialogue_context(
+  session TEXT PRIMARY KEY,
+  state TEXT NOT NULL DEFAULT '{}',
+  updated_at TEXT NOT NULL
+);
 """
 
 # Additive per-column migrations for databases created before Phase 2.
@@ -421,6 +427,32 @@ class Memory:
         return self.query(
             "SELECT * FROM lifecycle_events WHERE target_ref=? ORDER BY id",
             (target_ref,))
+
+    # ---- dialogue context (per session; never shared across sessions) ----
+    def get_context(self, session: str) -> dict:
+        row = self.query_one("SELECT * FROM dialogue_context WHERE session=?",
+                             (session,))
+        if not row:
+            return {"entities": [], "last_observation": None, "turn": 0}
+        try:
+            st = json.loads(row["state"])
+            st.setdefault("entities", [])
+            st.setdefault("turn", 0)
+            return st
+        except Exception:
+            return {"entities": [], "last_observation": None, "turn": 0}
+
+    def set_context(self, session: str, state: dict) -> None:
+        self.execute(
+            "INSERT INTO dialogue_context(session,state,updated_at)"
+            " VALUES(?,?,?)"
+            " ON CONFLICT(session) DO UPDATE SET state=excluded.state,"
+            " updated_at=excluded.updated_at",
+            (session, json.dumps(state, ensure_ascii=False), _utcnow()))
+
+    def clear_context(self, session: str) -> None:
+        self.execute("DELETE FROM dialogue_context WHERE session=?",
+                     (session,))
 
     # ---- questions ----
     def find_question(self, text: str,
