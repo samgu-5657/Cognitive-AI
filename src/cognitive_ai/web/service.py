@@ -216,10 +216,8 @@ class Workbench:
         row["validation"] = {**rep,
                              "selected": row["spec"].get("selected")}
         self.mem.save_rule(row)
-        promo = RL.promote_record(self.mem, rule_id, "validated",
-                                  validation=row["validation"])
-        if promo.get("ok") and activate:
-            promo = RL.promote_record(self.mem, rule_id, "active")
+        promo = RL.apply_validation_outcome(self.mem, rule_id,
+                                            row["validation"], activate)
         self.mem.add_experience("evaluation",
                                 f"web rule validate {rule_id}: {promo}",
                                 {"op": "rule_validate", "report": rep})

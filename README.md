@@ -297,7 +297,8 @@ pytest tests/test_rulelearn.py -q
 受限 DSL（bind/check/compute/emit，禁 eval，无代码生成）；归纳器只拟合
 参数式（仿射精确拟合、mod 分类需每剩余类≥2 例防记忆、合取贪心覆盖），
 歧义多候选必须 `rule-select` 人工选择，晋升要独立验证（训练 100% +
-held-out≥0.75 + 反例全拒 + 非法输入安全）+ 版本/回滚；执行器经
+held-out≥0.75 + 反例全拒 + 非法输入安全）+ 版本/回滚；重复验证与重复
+激活是显式幂等（只刷新报告，不 bump 版本、不改历史）；执行器经
 `ApplyLearnedRule`（origin=induced_rule，调用计数）实际调用，支持链式
 组合（_prev 传递，轨迹记录）；seed 规则经 `apply_rule(*)` 接入概念流程。
 实验：A 双规则组合解未见输入（6→13、9→19）；B 反例否决过宽规则；

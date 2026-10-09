@@ -513,12 +513,23 @@ def validate_rule(spec: dict, train_rows: list[dict],
 
 def promote_record(mem, rid: str, to_status: str,
                    validation: dict | None = None) -> dict:
-    """Candidate lifecycle with version history + rollback support."""
+    """Candidate lifecycle with version history + rollback support.
+
+    Legal transitions: candidate->validated->active, any->rejected,
+    rejected->candidate, active->superseded. Real transitions bump the
+    version, snapshot `previous`, and record a lifecycle event.
+    Idempotent repeats are explicit no-ops (no version bump, no history
+    rewrite): re-validating a validated rule refreshes its report;
+    re-activating an active rule does nothing. Anything else is an
+    error, never a silent state change.
+    """
     if to_status not in STATUSES:
         return {"ok": False, "error": f"bad status {to_status!r}"}
     row = mem.get_rule(rid)
     if row is None:
         return {"ok": False, "error": "rule not found"}
+    if to_status == row["status"]:
+        return _repeat_promotion(mem, row, validation)
     allowed = {"candidate": ("validated", "rejected"),
                "validated": ("active", "rejected"),
                "active": ("superseded", "rejected"),
@@ -545,6 +556,74 @@ def promote_record(mem, rid: str, to_status: str,
     mem.record_lifecycle("rule", rid, prev["status"], to_status,
                          f"rule {to_status}", [validation or {}])
     return {"ok": True, "version": row["version"]}
+
+
+def _repeat_promotion(mem, row: dict, validation: dict | None) -> dict:
+    """Idempotent repeat of the current status. No version bump, no
+    previous/history rewrite -- a repeat is not a transition."""
+    status = row["status"]
+    if status == "validated":
+        report = validation or {}
+        if report and not report.get("passed"):
+            return {"ok": False,
+                    "error": "re-validation failed; status unchanged",
+                    "version": row["version"]}
+        if report:
+            row["validation"] = report
+            mem.save_rule(row)
+        return {"ok": True, "version": row["version"],
+                "note": "already validated; report refreshed, "
+                        "version unchanged"}
+    if status == "active":
+        return {"ok": True, "version": row["version"],
+                "note": "already active; no-op, version unchanged"}
+    return {"ok": False,
+            "error": f"{status} -> {status} not allowed"}
+
+
+def apply_validation_outcome(mem, rid: str, report: dict,
+                             activate: bool = False) -> dict:
+    """Shared validate(+activate) sequencing for UI, CLI and API.
+
+    - candidate + passed  -> validated (then active if asked);
+    - validated + passed  -> report refresh, then active if asked;
+    - active + passed     -> stays active (re-validated, no-op);
+    - failed report       -> status unchanged, promotion refused.
+    Never demotes, never force-advances, never bumps versions on repeats.
+    """
+    row = mem.get_rule(rid)
+    if row is None:
+        return {"ok": False, "error": "rule not found"}
+    if not report.get("passed"):
+        return {"ok": False,
+                "error": "validation failed; "
+                         f"status unchanged ({row['status']})"}
+    status = row["status"]
+    if status == "candidate":
+        out = promote_record(mem, rid, "validated",
+                             validation={**report, **_sel(row)})
+        if not out.get("ok"):
+            return out
+    elif status == "validated":
+        out = promote_record(mem, rid, "validated",
+                             validation={**report, **_sel(row)})
+        if not out.get("ok"):
+            return out
+    elif status != "active":
+        return {"ok": False,
+                "error": f"cannot validate from status {status!r}"}
+    if activate and mem.get_rule(rid)["status"] != "active":
+        out = promote_record(mem, rid, "active")
+        if not out.get("ok"):
+            return out
+    final = mem.get_rule(rid)
+    return {"ok": True, "version": final["version"],
+            "status": final["status"]}
+
+
+def _sel(row: dict) -> dict:
+    sel = (row.get("spec") or {}).get("selected")
+    return {"selected": sel} if sel is not None else {}
 
 
 def rollback_record(mem, rid: str) -> dict:

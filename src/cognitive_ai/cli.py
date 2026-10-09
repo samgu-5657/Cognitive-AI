@@ -652,10 +652,9 @@ def cmd_rule_validate(a):
     rep = RL.validate_rule(spec, train, held, negs, Ontology(mem))
     row["validation"] = {**rep, "selected":
                          row["spec"].get("selected")}
-    out = RL.promote_record(mem, a.rule_id, "validated",
-                            validation=row["validation"])
-    if out.get("ok") and a.activate:
-        out = RL.promote_record(mem, a.rule_id, "active")
+    mem.save_rule(row)
+    out = RL.apply_validation_outcome(mem, a.rule_id, row["validation"],
+                                      a.activate)
     mem.add_experience("evaluation", f"rule validate {a.rule_id}: {out}",
                        {"op": "rule_validate", "outcome": "rule",
                         "report": rep})
