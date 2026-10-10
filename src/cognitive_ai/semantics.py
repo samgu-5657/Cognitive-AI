@@ -192,6 +192,25 @@ def parse_sentence(sentence: str, source: str = "user",
                     key=len, reverse=True):
         slots = slots.replace(h, "")
     pats = [
+        # ---- question templates (generic NP slots, interrogative first)
+        # X有什么用途/功能/用处 -> query function
+        (re.compile(r"^(?P<a>.+?)有什[么麽](?P<b>用途|功能|用处|作用)$"),
+         "query_function"),
+        # X可以拿来干什么 / 拿X能干什么 -> query function
+        (re.compile(r"^(?P<a>.+?)可以拿来(?P<b>干什么|做什么)$"),
+         "query_function"),
+        (re.compile(r"^拿(?P<a>.+?)能(?P<b>干什么|做什么)$"),
+         "query_function"),
+        # 用X通常能做什么 / 用X能干什么 -> query function
+        (re.compile(r"^用(?P<a>.+?)(通常)?能(?P<b>干什么|做什么|什么)$"),
+         "query_function"),
+        # X是干什么用的 / X是做什么的 -> query function
+        (re.compile(r"^(?P<a>.+?)是(?P<b>干什么|做什么)用的?$"),
+         "query_function"),
+        # 为什么人们会使用X -> query function about X
+        (re.compile(r"^为什么人们会使用(?P<a>.+?)$"), "query_function_use"),
+        # 为什么X会V -> query reason
+        (re.compile(r"^为什么(?P<a>.+?)会(?P<b>.+?)$"), "query_reason"),
         # X不是Y做的 / X不是金属的 / X并非Y所制 -> negate attribute
         (re.compile(r"^(?P<a>.+?)(?:不是|并非)(?P<b>.+?)"
                     r"(做|制成|构成|所制)的?$"),
@@ -331,6 +350,17 @@ def _fill(fr: SemanticFrame, kind: str, m, neg, hedge,
         else:
             fr.intent, fr.modality = "attribute", "assert"
             fr.confidence = 0.85
+    elif kind in ("query_function", "query_function_use"):
+        fr.entities.append(_ent(a, "subject"))
+        fr.predicates.append({"type": "query_function", "subj": a})
+        fr.intent, fr.modality = "query", "unknown"
+        fr.confidence = 0.8
+    elif kind == "query_reason":
+        fr.entities.append(_ent(a, "subject"))
+        fr.predicates.append({"type": "query_reason", "subj": a,
+                              "about": b})
+        fr.intent, fr.modality = "query", "unknown"
+        fr.confidence = 0.75
     elif kind == "negate_attr":
         fr.predicates.append({"type": "attr", "subj": a,
                               "key": _canon_attr("材质", lexicon), "value": b,

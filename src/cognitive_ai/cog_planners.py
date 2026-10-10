@@ -123,8 +123,21 @@ def _detect_conceptual(frame: dict, text: str) -> bool:
 def _plan_conceptual(task, frame) -> None:
     task.task_type = "conceptual"
     ents = [e["text"] for e in frame.get("entities", [])]
+    ask_key = None
+    ask_about = None
+    for p in frame.get("predicates", []):
+        if p.get("type") == "query_function":
+            ask_key = "function"
+        elif p.get("type") == "query_reason":
+            ask_about = "reason"
+        elif p.get("type") == "query_attr" and p.get("key"):
+            ask_key = p["key"]
     task.goal = {"kind": "answer_about", "entities": ents,
                  "raw": task.input_text}
+    if ask_key:
+        task.goal["ask_key"] = ask_key
+    if ask_about:
+        task.goal["ask_about"] = ask_about
     task.known_facts = [{"fact": f"提及实体:{e}", "source": "parse"}
                         for e in ents]
     if not ents:

@@ -324,8 +324,17 @@ def _resolve_entities(task, ctx) -> list[tuple]:
 
 def _run_attr_queries(task, ctx, trace) -> bool:
     from .operations import QueryAttribute
+    if (task.goal or {}).get("ask_about") == "reason":
+        # causal-reason questions have no attribute to look up: refuse
+        # honestly instead of guessing an unrelated attribute (e.g.
+        # function) and presenting it as the "reason".
+        trace["steps"].append(
+            {"op": "query_attribute", "status": "failed",
+             "note": "reason explanation unsupported; no causal model",
+             "inputs": {"concept": (task.goal.get("entities") or [None])[0]}})
+        return False
     text = task.input_text
-    key = _wanted_key(text)
+    key = (task.goal or {}).get("ask_key") or _wanted_key(text)
     ok_any = False
     for ent, (cid, ekey) in zip(task.goal.get("entities", []),
                                 _resolve_entities(task, ctx)):
@@ -346,7 +355,8 @@ def _run_attr_queries(task, ctx, trace) -> bool:
 
 
 def _wanted_key(text: str):
-    if "用途" in text or "用处" in text or "功能" in text or "干什么" in text:
+    if "用途" in text or "用处" in text or "功能" in text or "干什么" in text \
+            or "拿来" in text or "做什么" in text:
         return "function"
     if "材质" in text or "材料" in text or "什么做" in text:
         return "material"

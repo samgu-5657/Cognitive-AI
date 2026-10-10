@@ -46,6 +46,7 @@ ALIASES = {
     "上下文": "context", "清空上下文": "clear_context",
     "解题": "solve", "求解": "solve", "任务": "task",
     "学规则": "rule_learn", "词义": "lex",
+    "对话": "dialog",
 }
 
 TEACH_STAGES = ("attrs", "function", "category", "done")
@@ -66,6 +67,7 @@ class Session:
         self.pending_teach: dict | None = None
         self.pending_rule: dict | None = None
         self.pending_frame: dict | None = None
+        self.last_answer: dict | None = None
         self.session_id = uuid.uuid4().hex[:12]
         self._adapter = None
         self._ood_bundle = "unloaded"
@@ -148,6 +150,7 @@ class Session:
               "context": self._context, "clear_context": self._clear_context,
               "solve": self._solve, "task": self._task,
               "rule_learn": self._rule_learn, "lex": self._lex,
+              "dialog": self._dialog,
               }.get(cmd)
         if fn is None:
             return self._fallback(line)
@@ -176,6 +179,7 @@ class Session:
             "  任务/task <id>                查看已保存任务的推理轨迹",
             "  学规则/rule_learn <名称> <领域>  分步提交示例并归纳候选规则",
             "  词义/lex <词语> <标准键>      教一个属性词映射(如 把手 has_handle)",
+            "  对话/dialog <文本>           统一对话入口(寒暄/问答/追问/教学预览)",
             "  上下文/context  清空上下文/clear_context  会话指代记忆管理",
             "  队列/queue [pending]  审核/review <id> -- 训练样本审核",
             "  经历/历史/模型  experiences/history/model",
@@ -843,6 +847,19 @@ class Session:
             "evaluation", f"chat lexicon: {word}->{key}",
             {"op": "lexical", "word": word, "key": key})
         return [f"[lexical] 已记住 {word}->{key},后续解析即用(经验已记)。"]
+
+    def _dialog(self, args) -> list[str]:
+        # 对话 <文本>: unified entry (smalltalk/QA/followup/teach preview).
+        # Reuses dialog.process; never crashes, never writes on unknown.
+        if not args:
+            return ["用法: 对话 <文本>  (如: 对话 你好 / 对话 杯子有什么用途)"]
+        from . import dialog as _dlg
+        turn = _dlg.process(self, " ".join(args))
+        ans = turn.get("answer") or {}
+        lines = [f"[dialog:{turn.get('route')}] {ans.get('text', '')}"]
+        if ans.get("certainty"):
+            lines.append(f"确定度={ans['certainty']}")
+        return lines
 
     def _fallback(self, line: str) -> list[str]:
         # try compositional parse before giving up; a parsed frame still

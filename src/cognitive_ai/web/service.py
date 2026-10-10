@@ -86,6 +86,7 @@ class Workbench:
 
     # ---- dialogue & solve ----
     def solve(self, text: str, sid: str, style: str = "short") -> dict:
+        from ..answers import render
         from ..executor import solve_text
         from ..explainer import explain
         from ..semantics import parse_sentence
@@ -94,7 +95,7 @@ class Workbench:
             raise ValueError("bad parameter: style")
         frame = parse_sentence(text, source="web").to_dict()
         trace = solve_text(text, frame, self.mem, self.onto, self.reasoner)
-        ans = explain(trace, style=style)
+        ans = render(explain(trace, style=style), trace)
         if trace["task"]["status"] != "created":
             # unparseable inputs leave zero writes, not even an episodic log
             self.mem.add_experience("evaluation", f"web solve -> "
@@ -115,8 +116,20 @@ class Workbench:
         return {"lines": self.session(sid).handle("确认")}
 
     def chat(self, text: str, sid: str) -> dict:
+        """Unified dialogue entry (Phase 6B): every browser message goes
+        through dialog.process (context -> parse -> route -> execute ->
+        verify -> answer -> log). Staged teaching and legacy commands keep
+        their exact behavior inside the command route. The legacy "lines"
+        shape is preserved for the frontend; route/certainty/citations are
+        added, never substituted."""
+        from .. import dialog as _dlg
         text = _req_str(text, "text", allow_empty=True)
-        return {"lines": self.session(sid).handle(text or "")}
+        turn = _dlg.process(self.session(sid), text or "")
+        ans = turn.get("answer") or {}
+        lines = [t for t in (ans.get("text") or "").split("\n")]
+        return {"lines": lines, "route": turn.get("route"),
+                "certainty": ans.get("certainty", "unknown"),
+                "citations": ans.get("citations", [])}
 
     # ---- teaching (preview + confirm, lifecycle-gated) ----
     def teach_preview(self, name: str, attributes: dict,
