@@ -472,7 +472,6 @@ def _fill(fr: SemanticFrame, kind: str, m, neg, hedge,
             fr.intent, fr.modality = "attribute", "assert"
             fr.confidence = 0.85
     elif kind == "query_function":
-        fr.entities.append(_ent(a, "subject"))
         fr.predicates.append({"type": "query_function", "subj": a})
         fr.intent, fr.modality = "query", "unknown"
         fr.confidence = 0.8
@@ -484,7 +483,6 @@ def _fill(fr: SemanticFrame, kind: str, m, neg, hedge,
         fr.confidence = 0.8
     elif kind == "verify_attr":
         key = _canon_attr("材质", lexicon)
-        fr.entities.append(_ent(a, "subject"))
         fr.predicates.append({"type": "verify_attr", "subj": a, "key": key,
                               "expected": b})
         fr.intent, fr.modality = "query", "unknown"
@@ -499,7 +497,6 @@ def _fill(fr: SemanticFrame, kind: str, m, neg, hedge,
             key = lexicon[b]
         else:
             key = None
-        fr.entities.append(_ent(a, "subject"))
         fr.predicates.append({"type": "verify_attr", "subj": a, "key": key,
                               "expected": b})
         fr.intent, fr.modality = "query", "unknown"
@@ -509,7 +506,6 @@ def _fill(fr: SemanticFrame, kind: str, m, neg, hedge,
                                   "cannot verify")
         fr.trace.append("A-not-A question: asks, never denies")
     elif kind == "verify_class":
-        fr.entities.append(_ent(a, "subject"))
         fr.entities.append(_ent(_clean_np(b), "object"))
         fr.predicates.append({"type": "verify_class", "subj": a,
                               "expected": _clean_np(b)})
@@ -520,21 +516,18 @@ def _fill(fr: SemanticFrame, kind: str, m, neg, hedge,
         feat = _strip_qmark(_clean_np(b))
         if lexicon and feat in lexicon:
             feat = lexicon[feat]
-        fr.entities.append(_ent(a, "subject"))
         fr.predicates.append({"type": "verify_has", "subj": a,
                               "feature": feat})
         fr.intent, fr.modality = "query", "unknown"
         fr.confidence = 0.8
         fr.trace.append("A-not-A question: asks, never denies")
     elif kind == "verify_capable":
-        fr.entities.append(_ent(a, "subject"))
         fr.predicates.append({"type": "verify_capable", "subj": a,
                               "action": _strip_qmark(b)})
         fr.intent, fr.modality = "query", "unknown"
         fr.confidence = 0.8
         fr.trace.append("A-not-A question: asks, never denies")
     elif kind == "query_reason":
-        fr.entities.append(_ent(a, "subject"))
         fr.predicates.append({"type": "query_reason", "subj": a,
                               "about": b})
         fr.intent, fr.modality = "query", "unknown"
