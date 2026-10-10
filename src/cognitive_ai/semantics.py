@@ -258,6 +258,13 @@ def parse_sentence(sentence: str, source: str = "user",
             slots = slots[len(p):]
             fr.trace.append(f"politeness stripped: {p}")
             break
+    # Leading 那/那么 before a pronoun is discourse glue (那它… means
+    # 它…): strip it for slot matching so reference resolution sees the
+    # real pronoun. Logged; bare 那… with no pronoun behind stays as-is.
+    m_na = re.match(r"^(那么|那)(?=[它他她])", slots)
+    if m_na:
+        slots = slots[m_na.end():]
+        fr.trace.append("discourse 那 stripped before pronoun")
     pats = [
         # ---- question templates (generic NP slots, interrogative first)
         # X有什么用途/功能/用处 -> query function
@@ -274,10 +281,18 @@ def parse_sentence(sentence: str, source: str = "user",
         # X是干什么用的 / X是做什么的 -> query function
         (re.compile(r"^(?P<a>.+?)是(?P<b>干什么|做什么)用的?$"),
          "query_function"),
-        # 为什么人们会使用X -> query function about X
-        (re.compile(r"^为什么人们会使用(?P<a>.+?)$"), "query_function_use"),
+        # NOTE (post-6D fix): "为什么人们会使用X" is a WHY-question,
+        # not a function question. It falls through to the generic
+        # query_reason pattern below and abstains honestly without
+        # causal evidence -- never borrows the function answer.
         # 为什么X会V -> query reason
         (re.compile(r"^为什么(?P<a>.+?)会(?P<b>.+?)$"), "query_reason"),
+        # ---- topic introduction (generic object slot, no hardcodes).
+        # 我想了解X / 介绍一下X names X the current topic; the dialogue
+        # layer answers from the concept record (read-only overview).
+        (re.compile(r"^(?:我想了解|我想知道|介绍一下|讲讲|说说|聊聊)"
+                     r"(?P<b>.+?)$"),
+         "topic"),
         # ---- A-not-A verification questions (yes/no about KB facts).
         # Generic slots, NOT per-sentence hardcodes. Placed BEFORE every
         # negate pattern: 是不是 contains 不是 as a substring, and 不+是
@@ -382,7 +397,13 @@ def parse_sentence(sentence: str, source: str = "user",
     # 6. pronouns -> unresolved (resolution happens against context later).
     # Flag a pronoun unless its only occurrences sit inside longer entity
     # words (e.g. 这个 inside 这个壶 is a determiner, not a bare reference).
+    # A 那 consumed as discourse glue (trace "discourse 那 stripped") is
+    # not a reference either: only the pronoun behind it counts.
+    glue_na = any(t.startswith("discourse 那 stripped")
+                  for t in fr.trace)
     for p in PRONOUNS:
+        if p == "那" and glue_na:
+            continue
         if p not in s:
             continue
         buried = any(p in e["text"] and len(e["text"]) > len(p)
@@ -438,9 +459,15 @@ def _fill(fr: SemanticFrame, kind: str, m, neg, hedge,
         else:
             fr.intent, fr.modality = "attribute", "assert"
             fr.confidence = 0.85
-    elif kind in ("query_function", "query_function_use"):
+    elif kind == "query_function":
         fr.entities.append(_ent(a, "subject"))
         fr.predicates.append({"type": "query_function", "subj": a})
+        fr.intent, fr.modality = "query", "unknown"
+        fr.confidence = 0.8
+    elif kind == "topic":
+        subj = _clean_np(b)
+        fr.entities.append(_ent(subj, "subject"))
+        fr.predicates.append({"type": "query_topic", "subj": subj})
         fr.intent, fr.modality = "query", "unknown"
         fr.confidence = 0.8
     elif kind == "verify_attr":
@@ -697,6 +724,11 @@ def resolve_question(frame: dict, lexicon: dict | None = None) -> dict:
             # ask_about=reason and the executor refuses honestly. It is a
             # recognized question, never a clarification case.
             out.update(kind="reason_q")
+            return out
+        if t == "query_topic":
+            # 我想了解X: topic introduction answered from the concept
+            # record (read-only). Never a knowledge write.
+            out.update(kind="topic_q")
             return out
         if t in ("verify_attr", "verify_class", "verify_has",
                  "verify_capable"):

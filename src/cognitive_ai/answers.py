@@ -31,8 +31,12 @@ def render(explainer_out: dict, trace: dict) -> dict:
     certainty = explainer_out.get("certainty", "unknown")
     task = (trace.get("task") or {})
     if task.get("status") == "inconclusive":
-        return {"text": "证据不足，结论未定：" + explainer_out.get("text", ""),
-                "certainty": "unknown",
+        text = explainer_out.get("text", "")
+        # the explainer already prefixes inconclusive answers; never
+        # double-wrap the same refusal.
+        if not text.startswith("证据不足"):
+            text = "证据不足，结论未定：" + text
+        return {"text": text, "certainty": "unknown",
                 "citations": explainer_out.get("citations", []),
                 "provenance": explainer_out.get("provenance")}
     if certainty == "unknown" or task.get("status") != "verified":

@@ -34,7 +34,10 @@ def test_function_paraphrases_share_frame_and_answer(tmp_path):
         from cognitive_ai import dialog as D
         texts = ["杯子有什么用途", "杯子可以拿来干什么",
                  "拿杯子能干什么", "用杯子通常能做什么",
-                 "杯子是干什么用的", "为什么人们会使用杯子"]
+                 "杯子是干什么用的"]
+        # NOTE: "为什么人们会使用杯子" is deliberately NOT here: it is a
+        # reason question (reason_q), not a function paraphrase, and must
+        # abstain without causal evidence instead of borrowing drinking.
         for t in texts:
             fr = parse_sentence(t, source="user")
             assert fr.intent == "query", (t, fr.intent)

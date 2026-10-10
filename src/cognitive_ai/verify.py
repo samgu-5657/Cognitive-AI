@@ -278,36 +278,60 @@ def _check_binding_consistency(steps) -> dict:
 
 
 def _check_kb_conflicts(task, steps, memory, ontology) -> dict:
-    # Only conflicts touching THIS task's concepts/keys matter; a distant
-    # open conflict must not taint unrelated answers.
+    # Relevance-scoped (post-6D audit fix): a conflict blocks THIS task
+    # only if it touches a queried (concept, key) pair -- same key on the
+    # same concept or on an ancestor the value could be inherited from.
+    # A material conflict must not veto an unrelated function query, and
+    # concept-free tasks (math) are never vetoed by KB disputes. Distant
+    # conflicts stay recorded (listed in detail) but do not block.
+    # Unparseable conflict texts carry no provable relevance: reported,
+    # never blocking (logic tasks check their own contested premises in
+    # _check_logic_goal, so nothing is lost there).
     if ontology is None:
         return {"name": "kb_conflicts", "result": "inconclusive",
                 "detail": "no ontology available"}
     from .reasoner import Reasoner
-    touched: set[str] = set()
+    touched: set[tuple[str, str | None]] = set()
     for s in steps:
         if s.get("op") == "query_attribute":
             inp = s.get("inputs", {}) or {}
             if inp.get("concept"):
-                touched.add(inp["concept"])
-                if inp.get("key"):
-                    touched.add(f"{inp['concept']}.{inp['key']}")
-    hits = []
+                touched.add((inp["concept"], inp.get("key")))
+    hits, noted = [], []
+
+    def ancestors_of(cid: str) -> set[str]:
+        try:
+            return set(ontology.ancestors(cid) or [])
+        except Exception:
+            return set()
+
+    def relevant(cc: str | None, kk: str | None) -> bool:
+        if not cc or not kk:
+            return False
+        for (tc, tk) in touched:
+            if tk != kk:
+                continue
+            if cc == tc or cc in ancestors_of(tc):
+                return True
+        return False
+
     for cf in Reasoner(memory).check_conflicts():
         if cf.get("type") == "attribute_conflict":
             ref = f"{cf.get('concept')}.{cf.get('key')}"
-            if cf.get("concept") in touched or ref in touched:
+            if relevant(cf.get("concept"), cf.get("key")):
                 hits.append(ref)
+            else:
+                noted.append(ref)
         else:
             text = str((cf.get("claim") or {}).get("text", ""))
             m = re.match(r"(\S+?)\.(\S+?):", text)
-            if m and (m.group(1) in touched
-                      or f"{m.group(1)}.{m.group(2)}" in touched):
-                hits.append(text[:60])
-            elif not touched:
-                hits.append(text[:60])
+            if m and relevant(m.group(1), m.group(2)):
+                hits.append(f"{m.group(1)}.{m.group(2)}")
+            else:
+                noted.append(text[:60] or "(unparseable conflict)")
     if hits:
         return {"name": "kb_conflicts", "result": "inconclusive",
                 "detail": f"open conflict(s) touch this task: {hits}"}
+    extra = f"; noted but unrelated: {noted}" if noted else ""
     return {"name": "kb_conflicts", "result": "verified",
-            "detail": "no open conflicts touch this task"}
+            "detail": "no open conflicts touch this task" + extra}
