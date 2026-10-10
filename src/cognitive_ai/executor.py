@@ -29,83 +29,18 @@ def _sync(task: CognitiveTask, trace: dict) -> None:
 
 def solve_text(text: str, frame: dict, memory, ontology, reasoner,
                max_repairs: int = 1) -> dict:
-    """Full loop for one input. Returns the persisted ExecutionTrace."""
-    task = build_task(text, frame, memory)
-    trace: dict = {"task": task.to_dict(), "steps": [],
-                   "repairs": [], "gap": None, "failure_cause": None,
-                   "verification": None, "metacog": []}
-    if not task.is_actionable():
-        trace["failure_cause"] = "unparseable"
-        _sync(task, trace)
-        _persist(memory, task, trace)
-        return trace
-    from . import metacog, verify
-    ctx = _ctx(memory, ontology, reasoner)
-    plan = _make_plan(task)
-    task.status = "running"
-    budget = max_repairs + 1
-    attempts = 0
-    verification = None
-    while True:
-        ok = _run_plan(task, plan, ctx, trace)
-        attempts += 1
-        if ok:
-            verification = verify.verify_task(
-                task.to_dict(), trace["steps"], memory, ontology)
-            trace["verification"] = verification
-            if verification["verdict"] == "verified":
-                task.status = "verified"
-                _finalize(memory, task, trace)
-                return trace
-            if verification["verdict"] == "inconclusive":
-                task.status = "inconclusive"
-                trace["failure_cause"] = "verify_failed"
-                _raise_gap_for(task, trace, memory)
-                _finalize(memory, task, trace)
-                return trace
-            ok = False  # rejected: fall through to failure handling
-        last = trace["steps"][-1] if trace["steps"] else {}
-        cause = _classify_failure(task, last)
-        if verification is not None and \
-                verification.get("verdict") == "rejected":
-            cause = "verify_failed"
-        decision = metacog.decide(task.to_dict(), trace["steps"],
-                                  verification, memory, attempts, budget)
-        trace["metacog"].append({**decision, "cause": cause,
-                                 "attempt": attempts})
-        if verification is not None and \
-                verification.get("verdict") == "rejected":
-            cause = "verify_failed"
-        trace["repairs"].append({"attempt": attempts, "failed_op":
-                                 last.get("op"), "cause": cause,
-                                 "decision": decision["action"]})
-        if decision["action"] == "switch_rule":
-            alt = _alt_plan(task, plan, last.get("op"))
-            if alt and attempts < budget:
-                plan = alt
-                verification = None
-                continue
-        if decision["action"] == "try_analogy":
-            tried = _solve_via_analogy_once(task, trace, ctx, memory,
-                                            ontology, reasoner)
-            if tried == "verified":
-                task.status = "verified"
-                _finalize(memory, task, trace)
-                return trace
-            attempts += 1
-            verification = None
-            if attempts < budget:
-                continue
-        break
-    if task.status != "inconclusive":
-        task.status = "failed"
-    if not trace["failure_cause"]:
-        trace["failure_cause"] = trace["repairs"][-1]["cause"] \
-            if trace["repairs"] else "verify_failed"
-    if trace["gap"] is None:
-        _raise_gap_for(task, trace, memory)
-    _finalize(memory, task, trace)
-    return trace
+    """Compat entry: delegates to the unified controller (Phase 6H-1a).
+
+    Same signature, same returned ExecutionTrace. The controller drives
+    the single bounded loop through the segment functions below; this
+    wrapper only adapts session-less callers (CLI, Web solve, tests)
+    and keeps their own logging (record=False).
+    """
+    from .cognitive_cycle import SolverSession, run_cycle
+    session = SolverSession(memory, ontology, reasoner)
+    result = run_cycle(session, text, frame, record=False,
+                       max_repairs=max_repairs)
+    return result["trace"]
 
 
 def _make_plan(task: CognitiveTask) -> list[dict]:

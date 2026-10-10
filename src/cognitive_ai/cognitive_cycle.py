@@ -24,35 +24,68 @@ _ABSTAIN_CAUSES = ("missing_concept", "missing_rule")
 _FAILURE_CAUSES = ("unparseable", "wrong_op", "compute_failed")
 
 
-def run_cycle(session, text: str, frame: dict) -> dict:
+class SolverSession:
+    """Minimal session facade for session-less callers (Phase 6H-1a).
+
+    Lets the compat entry executor.solve_text delegate to the unified
+    controller without inventing dialogue state: no context, no pending
+    teaching, no cross-turn memory. pending_clarify set here dies with
+    the object, which is correct (nothing to resume to).
+    """
+
+    def __init__(self, memory, ontology, reasoner):
+        self.mem = memory
+        self.onto = ontology
+        self.reasoner = reasoner
+        self.last_answer = None
+        self.pending_clarify = None
+        self.session_id = "solver"
+
+
+def run_cycle(session, text: str, frame: dict, *, record: bool = True,
+              max_repairs: int = 1) -> dict:
     """Run one ordinary NL request. Never raises on user input.
 
     frame: already-parsed SemanticFrame dict (pronouns resolved by the
-    caller). Returns {"state", "answer", "trace", "task", "stages",
+    caller). The controller builds the task, drives execution through
+    the executor's plan/run segment functions (single bounded loop
+    below -- the ONLY repair loop), classifies the unified outcome and
+    renders. record=False skips the cycle experience (compat callers
+    keep their own logging).
+    Returns {"state", "answer", "trace", "task", "stages",
     "pending"} where answer is the rendered {text, certainty,
     citations, provenance} dict.
     """
     stages: list[dict] = [{"stage": "parse", "status": "ok"}]
     try:
         from .cogtask import build_task
+        from .executor import _persist, _sync
         task = build_task(text, frame, session.mem)
         stages.append({"stage": "build", "status": "ok",
                        "task_type": task.task_type,
                        "actionable": task.is_actionable()})
         if not task.is_actionable():
-            return _clarify(session, task, stages,
-                            "任务缺少可执行的目标或关键信息。")
-        from .executor import solve_text
-        trace = solve_text(text, frame, session.mem, session.onto,
-                           session.reasoner)
-        stages.append({"stage": "execute", "status": "ok",
-                       "task_status": trace["task"]["status"],
-                       "failure_cause": trace.get("failure_cause")})
-        stages.append({"stage": "verify", "status": "ok",
-                       "verdict": (trace.get("verification") or {}).get(
-                           "verdict")})
+            trace: dict = {"task": task.to_dict(), "steps": [],
+                           "repairs": [], "gap": None,
+                           "failure_cause": "unparseable",
+                           "verification": None, "metacog": []}
+            _sync(task, trace)
+            _persist(session.mem, task, trace)
+            result = _clarify(session, task, stages,
+                              "任务缺少可执行的目标或关键信息。")
+            result["trace"] = trace
+            result["task"] = trace["task"]
+            if record:
+                _record(session, result)
+            return result
+        trace = {"task": task.to_dict(), "steps": [],
+                 "repairs": [], "gap": None, "failure_cause": None,
+                 "verification": None, "metacog": []}
+        _drive_execution(task, session.mem, session.onto,
+                         session.reasoner, trace, max_repairs, stages)
         result = _classify(session, task, trace, stages)
-        _record(session, result)
+        if record:
+            _record(session, result)
         return result
     except Exception as e:  # noqa: BLE001 - cycle never crashes
         task = {"task_id": None, "status": "failed"}
@@ -63,7 +96,8 @@ def run_cycle(session, text: str, frame: dict) -> dict:
             "stages": stages + [{"stage": "decide", "status": "failed",
                                  "error": f"{type(e).__name__}: {e}"}],
             "pending": None}
-        _record(session, result)
+        if record:
+            _record(session, result)
         return result
 
 
@@ -131,8 +165,103 @@ def _clarify(session, task, stages: list, why: str) -> dict:
                    "citations": []},
         "trace": {"task": pending["task"], "steps": []},
         "task": pending["task"], "stages": stages, "pending": pending}
-    _record(session, result)
     return result
+
+
+def _drive_execution(task, mem, onto, reasoner, trace: dict,
+                     max_repairs: int, stages: list) -> None:
+    """The single bounded execution loop (moved verbatim here, 6H-1a).
+
+    Previously this lived inside executor.solve_text, which made the
+    controller call a full plan/verify/repair cycle. Now the controller
+    owns the loop and only borrows the executor's segment functions
+    (plan builders, single-plan runner, repair helpers, persistence);
+    the executor never runs a control loop of its own.
+    """
+    from . import metacog, verify
+    from .executor import (_alt_plan, _classify_failure, _finalize,
+                           _make_plan, _raise_gap_for, _run_plan,
+                           _solve_via_analogy_once)
+    ctx = {"memory": mem, "ontology": onto, "reasoner": reasoner,
+           "working_memory": {}}
+    plan = _make_plan(task)
+    task.status = "running"
+    budget = max_repairs + 1
+    attempts = 0
+    verification = None
+    while True:
+        ok = _run_plan(task, plan, ctx, trace)
+        attempts += 1
+        if ok:
+            verification = verify.verify_task(
+                task.to_dict(), trace["steps"], mem, onto)
+            trace["verification"] = verification
+            if verification["verdict"] == "verified":
+                task.status = "verified"
+                _finalize(mem, task, trace)
+                break
+            if verification["verdict"] == "inconclusive":
+                task.status = "inconclusive"
+                trace["failure_cause"] = "verify_failed"
+                _raise_gap_for(task, trace, mem)
+                _finalize(mem, task, trace)
+                break
+            ok = False  # rejected: fall through to failure handling
+        last = trace["steps"][-1] if trace["steps"] else {}
+        cause = _classify_failure(task, last)
+        if verification is not None and \
+                verification.get("verdict") == "rejected":
+            cause = "verify_failed"
+        decision = metacog.decide(task.to_dict(), trace["steps"],
+                                  verification, mem, attempts, budget)
+        trace["metacog"].append({**decision, "cause": cause,
+                                 "attempt": attempts})
+        if verification is not None and \
+                verification.get("verdict") == "rejected":
+            cause = "verify_failed"
+        trace["repairs"].append({"attempt": attempts, "failed_op":
+                                 last.get("op"), "cause": cause,
+                                 "decision": decision["action"]})
+        if decision["action"] == "switch_rule":
+            alt = _alt_plan(task, plan, last.get("op"))
+            if alt and attempts < budget:
+                plan = alt
+                verification = None
+                continue
+        if decision["action"] == "try_analogy":
+            tried = _solve_via_analogy_once(task, trace, ctx, mem,
+                                            onto, reasoner)
+            if tried == "verified":
+                task.status = "verified"
+                _finalize(mem, task, trace)
+                break
+            attempts += 1
+            verification = None
+            if attempts < budget:
+                continue
+        break
+    if task.status not in ("verified", "inconclusive"):
+        task.status = "failed"
+    _finish_execution(task, trace, mem)
+    stages.append({"stage": "execute", "status": "ok",
+                   "task_status": trace["task"]["status"],
+                   "failure_cause": trace.get("failure_cause")})
+    stages.append({"stage": "verify", "status": "ok",
+                   "verdict": (trace.get("verification") or {}).get(
+                       "verdict")})
+
+
+def _finish_execution(task, trace: dict, mem) -> None:
+    from .executor import _finalize, _raise_gap_for
+    if task.status in ("verified", "inconclusive"):
+        return  # already finalized inside the loop; touch nothing
+    task.status = "failed"
+    if not trace["failure_cause"]:
+        trace["failure_cause"] = trace["repairs"][-1]["cause"] \
+            if trace["repairs"] else "verify_failed"
+    if trace["gap"] is None:
+        _raise_gap_for(task, trace, mem)
+    _finalize(mem, task, trace)
 
 
 def try_resume(session, frame: dict, raw_text: str = "") -> dict | None:
