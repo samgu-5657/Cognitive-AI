@@ -74,6 +74,7 @@ class Session:
         self.pending_rule: dict | None = None
         self.pending_frame: dict | None = None
         self.pending_define: dict | None = None
+        self.pending_clarify: dict | None = None
         self.last_answer: dict | None = None
         self.session_id = uuid.uuid4().hex[:12]
         self._adapter = None

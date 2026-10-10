@@ -28,6 +28,16 @@ def _is_smalltalk_command(text: str) -> str | None:
     return None
 
 
+def _frame_from_dict(d: dict):
+    """Rebuild a SemanticFrame from a stored dict (resume path)."""
+    from .semantics import SemanticFrame as _SF
+    return _SF(**{k: d.get(k) for k in
+                   ("intent", "entities", "predicates", "modality",
+                    "scope", "source", "confidence",
+                    "unresolved_references", "ambiguities", "raw",
+                    "trace")})
+
+
 def _is_followup(text: str) -> str | None:
     s = text.strip()
     if any(w in s for w in FOLLOW_WHY):
@@ -337,6 +347,15 @@ def process(session, text: str) -> dict:
                     "certainty": "unknown", "citations": []}
                 _log(session, turn)
                 return turn
+        # clarification resume (Phase 6H-1): a waiting pronoun/question
+        # is retried with the new input merged in; anything else flows
+        # through normally (a later success or clarification replaces it).
+        from .cognitive_cycle import park_for_clarify, run_cycle, try_resume
+        resumed = try_resume(session, frame.to_dict(), work)
+        if resumed is not None:
+            frame = _frame_from_dict(resumed)
+            turn["stages"]["parse"] = frame.to_dict()
+            turn["stages"]["resume"] = True
         # unresolved pronouns with several/no candidates: ask, don't guess.
         if frame.unresolved_references and frame.intent == "query" \
                 and frame.predicates:
@@ -350,6 +369,8 @@ def process(session, text: str) -> dict:
                         f"确定所指{extra}。请直接说出对象名称。"
                         "本次未写入任何内容。",
                 "certainty": "unknown", "citations": []}
+            park_for_clarify(session, frame.to_dict(),
+                             turn["answer"]["text"])
             _log(session, turn)
             return turn
         if frame.intent == "query" and any(
@@ -365,7 +386,8 @@ def process(session, text: str) -> dict:
             turn["stages"]["adjudication"] = rq
             if rq.get("needs_clarify") and rq.get("kind") == "unknown_q":
                 # understood enough to know what is missing, not enough
-                # to answer: ask, don't guess. Zero writes.
+                # to answer: ask, don't guess. Zero writes. Parked for a
+                # later resume with the missing piece.
                 turn["route"] = "clarify"
                 turn["answer"] = {
                     "text": "我不太确定你在问什么："
@@ -374,10 +396,24 @@ def process(session, text: str) -> dict:
                             "“观察 <名称> 属性=值”结构化输入。"
                             "本次未写入任何内容。",
                     "certainty": "unknown", "citations": []}
+                park_for_clarify(session, frame.to_dict(),
+                                 turn["answer"]["text"])
                 _log(session, turn)
                 return turn
+            # ordinary request: one unified cognitive cycle (Phase 6H-1).
+            # The controller logs exactly one experience; dialog skips its
+            # own turn log on this path (no double counting).
+            cyc = run_cycle(session, work, frame.to_dict())
             turn["route"] = "qa"
-            turn["answer"] = _answer_qa(session, work, frame)
+            turn["answer"] = cyc["answer"]
+            turn["stages"]["cycle"] = {"state": cyc["state"],
+                                       "stages": cyc["stages"]}
+            if cyc["state"] == "answer":
+                try:
+                    session.pending_clarify = None
+                except Exception:
+                    pass
+            return turn
         elif frame.intent in ("observe", "correct", "negate", "hedge",
                               "causal"):
             turn["route"] = "teach_pending"
@@ -822,26 +858,6 @@ def _answer_followup(session, kind: str) -> dict:
                 "certainty": "unknown", "citations": []}
     return {"text": "上一条回答没有具体实例可举。请先问一个具体概念。",
             "certainty": "unknown", "citations": []}
-
-
-def _answer_qa(session, text: str, frame) -> dict:
-    from .executor import solve_text
-    from .explainer import explain
-    trace = solve_text(text, frame.to_dict(), session.mem, session.onto,
-                       session.reasoner)
-    ans = explain(trace, style="short")
-    from .answers import render
-    out = render(ans, trace)
-    session.last_answer = {"text": out["text"],
-                           "certainty": ans["certainty"],
-                           "citations": ans["citations"],
-                           "provenance": ans.get("provenance"),
-                           "task_id": trace["task"]["task_id"]}
-    session.mem.add_experience(
-        "evaluation", f"dialog qa -> {trace['task']['status']}",
-        {"task_id": trace["task"]["task_id"],
-         "certainty": ans["certainty"], "op": "dialog"})
-    return out
 
 
 def _log(session, turn: dict) -> None:
