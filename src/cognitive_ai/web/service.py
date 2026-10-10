@@ -93,7 +93,17 @@ class Workbench:
         text = _req_str(text, "text")
         if style not in ("short", "steps"):
             raise ValueError("bad parameter: style")
-        frame = parse_sentence(text, source="web").to_dict()
+        try:
+            lexicon = {r["word"]: r["key"]
+                       for r in self.mem.list_mappings()}
+        except Exception:
+            lexicon = {}
+        try:
+            phrase_rules = self.mem.list_phrase_rules(status="active")
+        except Exception:
+            phrase_rules = []
+        frame = parse_sentence(text, source="web", lexicon=lexicon,
+                               phrase_rules=phrase_rules).to_dict()
         trace = solve_text(text, frame, self.mem, self.onto, self.reasoner)
         ans = render(explain(trace, style=style), trace)
         if trace["task"]["status"] != "created":

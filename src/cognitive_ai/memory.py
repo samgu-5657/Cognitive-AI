@@ -171,6 +171,31 @@ CREATE TABLE IF NOT EXISTS lexicon(
   evidence TEXT NOT NULL DEFAULT '[]',
   created_at TEXT NOT NULL
 );
+-- Phase 6C: learned expression -> canonical form mappings (additive).
+-- Examples are user-taught (src => dst) pairs; rules are induced templates
+-- (literal or prefix/suffix slot) with candidate/validated/active gating.
+-- Nothing here is knowledge: rules only reshape input text before the
+-- fixed compositional parser, and every application is logged in the
+-- frame trace. Activation is always explicit, never automatic.
+CREATE TABLE IF NOT EXISTS phrase_examples(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  src TEXT NOT NULL,
+  dst TEXT NOT NULL,
+  heldout INTEGER NOT NULL DEFAULT 0,
+  evidence TEXT NOT NULL DEFAULT '[]',
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS phrase_rules(
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL DEFAULT 'literal',
+  src_tmpl TEXT NOT NULL DEFAULT '{}',
+  dst_tmpl TEXT NOT NULL DEFAULT '{}',
+  status TEXT NOT NULL DEFAULT 'candidate',
+  evidence TEXT NOT NULL DEFAULT '[]',
+  report TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 """
 
 # Additive per-column migrations for databases created before Phase 2.
@@ -590,6 +615,77 @@ class Memory:
 
     def list_mappings(self) -> list[dict]:
         return self.query("SELECT * FROM lexicon ORDER BY word")
+
+    # ---- learned phrase rules (Phase 6C): expression -> canonical form ----
+    def add_phrase_example(self, src: str, dst: str, heldout: bool = False,
+                           evidence: str = "") -> int:
+        src, dst = src.strip(), dst.strip()
+        if not src or not dst:
+            raise ValueError("src and dst required")
+        if src == dst:
+            raise ValueError("src and dst are identical; nothing to learn")
+        cur = self.execute(
+            "INSERT INTO phrase_examples(src,dst,heldout,evidence,"
+            "created_at) VALUES(?,?,?,?,?)",
+            (src, dst, 1 if heldout else 0,
+             json.dumps([evidence] if evidence else [], ensure_ascii=False),
+             _utcnow()))
+        return cur.lastrowid
+
+    def list_phrase_examples(self, heldout=None) -> list[dict]:
+        if heldout is None:
+            return self.query("SELECT * FROM phrase_examples ORDER BY id")
+        return self.query("SELECT * FROM phrase_examples WHERE heldout=? "
+                          "ORDER BY id", (1 if heldout else 0,))
+
+    def save_phrase_rule(self, rule: dict) -> None:
+        now = _utcnow()
+        self.execute(
+            "INSERT INTO phrase_rules(id,kind,src_tmpl,dst_tmpl,status,"
+            "evidence,report,created_at,updated_at)"
+            " VALUES(?,?,?,?,?,?,?,?,?)"
+            " ON CONFLICT(id) DO UPDATE SET kind=excluded.kind,"
+            " src_tmpl=excluded.src_tmpl, dst_tmpl=excluded.dst_tmpl,"
+            " status=excluded.status, evidence=excluded.evidence,"
+            " report=excluded.report, updated_at=excluded.updated_at",
+            (rule["id"], rule.get("kind", "literal"),
+             json.dumps(rule.get("src_tmpl"), ensure_ascii=False),
+             json.dumps(rule.get("dst_tmpl"), ensure_ascii=False),
+             rule.get("status", "candidate"),
+             json.dumps(rule.get("evidence", []), ensure_ascii=False),
+             json.dumps(rule.get("report", {}), ensure_ascii=False), now,
+             now))
+
+    def get_phrase_rule(self, rid: str) -> dict | None:
+        row = self.query_one("SELECT * FROM phrase_rules WHERE id=?", (rid,))
+        if not row:
+            return None
+        return self._decode_phrase_rule(row)
+
+    def list_phrase_rules(self, status: str | None = None) -> list[dict]:
+        if status:
+            rows = self.query("SELECT * FROM phrase_rules WHERE status=? "
+                              "ORDER BY id", (status,))
+        else:
+            rows = self.query("SELECT * FROM phrase_rules ORDER BY id")
+        return [self._decode_phrase_rule(r) for r in rows]
+
+    @staticmethod
+    def _decode_phrase_rule(row: dict) -> dict:
+        out = dict(row)
+        for k in ("src_tmpl", "dst_tmpl", "evidence", "report"):
+            try:
+                out[k] = json.loads(out[k]) if isinstance(out[k], str) \
+                    else out[k]
+            except Exception:
+                pass
+        # the dst-frame signature lives inside the report (no extra
+        # column): promote it so validation/application see one shape
+        # whether the rule is fresh from induce() or loaded from disk.
+        if "signature" not in out and isinstance(out.get("report"), dict) \
+                and "signature" in out["report"]:
+            out["signature"] = out["report"]["signature"]
+        return out
 
     # ---- dialogue context (per session; never shared across sessions) ----
     def get_context(self, session: str) -> dict:

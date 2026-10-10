@@ -106,8 +106,10 @@ def process(session, text: str) -> dict:
         # QA so the existing engine runs; never reject it as unknown prose.
         from .cog_planners import _detect_math
         from .semantics import parse_sentence
+        _ph = getattr(session, "_phrase_rules", None)
         frame = parse_sentence(stripped, source="user",
-                               lexicon=session._lexicon())
+                               lexicon=session._lexicon(),
+                               phrase_rules=_ph() if _ph else None)
         turn["stages"]["parse"] = frame.to_dict()
         if frame.intent in ("query", "classify", "attribute", "function") \
                 or _detect_math(stripped):

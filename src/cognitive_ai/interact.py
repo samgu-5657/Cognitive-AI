@@ -47,6 +47,9 @@ ALIASES = {
     "解题": "solve", "求解": "solve", "任务": "task",
     "学规则": "rule_learn", "词义": "lex",
     "对话": "dialog",
+    "说法": "phrase", "说法归纳": "phrase_induce",
+    "说法验证": "phrase_validate", "说法激活": "phrase_activate",
+    "说法列表": "phrase_list",
 }
 
 TEACH_STAGES = ("attrs", "function", "category", "done")
@@ -120,6 +123,16 @@ class Session:
         except Exception:
             return {}
 
+    def _phrase_rules(self) -> list[dict]:
+        """Active learned rewrite rules for the parser (Phase 6C).
+
+        Empty until the user teaches phrasings and explicitly activates
+        a validated rule; the parser uses them as fallback only."""
+        try:
+            return self.mem.list_phrase_rules(status="active")
+        except Exception:
+            return []
+
     def handle(self, line: str) -> list[str]:
         line = (line or "").strip()
         parts = line.split()
@@ -151,6 +164,10 @@ class Session:
               "solve": self._solve, "task": self._task,
               "rule_learn": self._rule_learn, "lex": self._lex,
               "dialog": self._dialog,
+              "phrase": self._phrase, "phrase_induce": self._phrase_induce,
+              "phrase_validate": self._phrase_validate,
+              "phrase_activate": self._phrase_activate,
+              "phrase_list": self._phrase_list,
               }.get(cmd)
         if fn is None:
             return self._fallback(line)
@@ -180,6 +197,8 @@ class Session:
             "  学规则/rule_learn <名称> <领域>  分步提交示例并归纳候选规则",
             "  词义/lex <词语> <标准键>      教一个属性词映射(如 把手 has_handle)",
             "  对话/dialog <文本>           统一对话入口(寒暄/问答/追问/教学预览)",
+            "  说法 <新说法> => <标准说法> [--留存]  教一种新表达(存示例,不改解析)",
+            "  说法归纳/验证/激活/列表  从示例归纳改写模板并验证后显式激活",
             "  上下文/context  清空上下文/clear_context  会话指代记忆管理",
             "  队列/queue [pending]  审核/review <id> -- 训练样本审核",
             "  经历/历史/模型  experiences/history/model",
@@ -512,7 +531,8 @@ class Session:
             return ["用法: 理解 <中文句子>  (解析后用'确认'执行)"]
         text = " ".join(args)
         frame = parse_sentence(text, source="user",
-                               lexicon=self._lexicon())
+                               lexicon=self._lexicon(),
+                               phrase_rules=self._phrase_rules())
         state = self.mem.get_context(self.session_id)
         frame = resolve_frame(frame, state)
         if frame.intent == "unknown":
@@ -687,7 +707,8 @@ class Session:
         from .explainer import explain
         from .semantics import parse_sentence as _parse
         text = " ".join(args)
-        frame = _parse(text, source="user").to_dict()
+        frame = _parse(text, source="user", lexicon=self._lexicon(),
+                       phrase_rules=self._phrase_rules()).to_dict()
         trace = solve_text(text, frame, self.mem, self.onto, self.reasoner)
         ans = explain(trace, style="steps" if len(args) > 3 else "short")
         self.mem.add_experience(
@@ -861,12 +882,121 @@ class Session:
             lines.append(f"确定度={ans['certainty']}")
         return lines
 
+    # ---- phrase teaching flow (Phase 6C): examples -> induce (candidate)
+    # -> held-out validate -> explicit activate. Learned rules only
+    # reshape unknown inputs before the fixed parser; they never write
+    # knowledge and never override a direct parse.
+    def _phrase(self, args) -> list[str]:
+        # 说法 <新说法> => <标准说法> [--留存]
+        if "=>" not in " ".join(args):
+            return ["用法: 说法 <新说法> => <标准说法> [--留存]  "
+                    "(--留存: 记为独立验证例,不参与归纳)"]
+        heldout = args[-1] == "--留存"
+        body = " ".join(args[:-1] if heldout else args)
+        src, dst = (p.strip() for p in body.split("=>", 1))
+        from . import phraselearn as PL
+        chk = PL.check_example(src, dst, self._lexicon())
+        if not chk["ok"]:
+            return [f"[phrase] 示例未收录: {chk['reason']}。"
+                    "标准说法须能被现有解析器直接理解(可用'理解'先试)。"]
+        eid = self.mem.add_phrase_example(
+            src, dst, heldout, evidence="chat-teach")
+        self.mem.add_experience(
+            "evaluation", f"chat phrase example #{eid}",
+            {"op": "phrase_teach", "heldout": heldout})
+        kind = "验证例" if heldout else "训练例"
+        return [f"[phrase] 已记{kind}#{eid}: {src!r} => {dst!r} "
+                f"(目标意图={chk['signature']['intent']})。",
+                "示例只存不改解析；用'说法归纳'从训练例归纳候选模板。"]
+
+    def _phrase_induce(self, args) -> list[str]:
+        from . import phraselearn as PL
+        trains = self.mem.list_phrase_examples(heldout=False)
+        if len(trains) < 1:
+            return ["训练例不足(至少1个)。先用'说法 A => B'教学。"]
+        rep = PL.induce(
+            [{"src": r["src"], "dst": r["dst"]} for r in trains],
+            self._lexicon())
+        lines = [f"[phrase] 归纳完成: {len(rep['candidates'])} 候选, "
+                 f"{len(rep['rejected'])} 组被拒(已说明原因,未建规则)。"]
+        for c in rep["candidates"]:
+            rid = PL.new_rule_id("chat")
+            self.mem.save_phrase_rule(
+                {"id": rid, "kind": c["kind"], "src_tmpl": c["src_tmpl"],
+                 "dst_tmpl": c["dst_tmpl"], "status": "candidate",
+                 "evidence": [{"source": "chat", "support": c["support"]}],
+                 "report": {"note": c["note"],
+                            "signature": c["signature"]}})
+            lines.append(f"  {rid} [{c['kind']}] {c['note']} "
+                         f"(状态candidate,未验证未激活)")
+        for r in rep["rejected"]:
+            lines.append(f"  拒: {r.get('reason')}")
+        self.mem.add_experience(
+            "evaluation", "chat phrase induce",
+            {"op": "phrase_induce",
+             "candidates": len(rep["candidates"])})
+        lines.append("候选须经'说法验证 <id>'(独立验证例全过)再'说法激活 <id>'"
+                     "才能参与解析。")
+        return lines
+
+    def _phrase_validate(self, args) -> list[str]:
+        if not args:
+            return ["用法: 说法验证 <规则id>"]
+        from . import phraselearn as PL
+        row = self.mem.get_phrase_rule(args[0])
+        if not row:
+            return ["查无此规则。先用'说法列表'查看。"]
+        held = []
+        for r in self.mem.list_phrase_examples(heldout=True):
+            if PL._sig_key(PL.parse_for_filter(r["dst"],
+                                               self._lexicon())) == \
+                    PL._sig_key(row.get("signature", {})):
+                held.append({"src": r["src"], "dst": r["dst"]})
+        if not held:
+            return [f"[phrase] {args[0]} 无同语义的验证例,无法验证。",
+                    "用'说法 <新说法> => <同类标准说法> --留存'补充后再试。"]
+        rep = PL.validate_rule(row, held, self._lexicon())
+        if rep["passed"]:
+            row["status"] = "validated"
+            row["report"] = {**row.get("report", {}), **rep}
+            self.mem.save_phrase_rule(row)
+            self.mem.add_experience(
+                "evaluation", f"phrase validate {args[0]}: passed",
+                {"op": "phrase_validate", "report": rep})
+            return [f"[phrase] {args[0]} 验证通过({rep['checked']}个验证例全中)。"
+                    "状态validated；用'说法激活'显式激活后才参与解析。"]
+        row["report"] = {**row.get("report", {}), **rep}
+        self.mem.save_phrase_rule(row)
+        bad = [d for d in rep.get("detail", []) if not d["ok"]]
+        return [f"[phrase] {args[0]} 验证未通过: {rep.get('reason')}。",
+                f"首个失败: {bad[0] if bad else rep}。规则停在candidate。"]
+
+    def _phrase_activate(self, args) -> list[str]:
+        if not args:
+            return ["用法: 说法激活 <规则id>"]
+        from . import phraselearn as PL
+        out = PL.activate_rule(self.mem, args[0])
+        if out.get("ok"):
+            return [f"[phrase] {args[0]} 已激活,后续未知输入会尝试该改写"
+                    "(直接能解析的输入不受影响)。"]
+        return [f"[phrase] 激活失败: {out.get('error')}"]
+
+    def _phrase_list(self, args) -> list[str]:
+        rows = self.mem.list_phrase_rules()
+        nex = len(self.mem.list_phrase_examples())
+        out = [f"说法示例{nex}条；规则{len(rows)}条:"]
+        for r in rows:
+            out.append(f"  {r['id']} [{r['kind']}/{r['status']}] "
+                       f"{r['src_tmpl']} -> {r['dst_tmpl']}")
+        return out
+
     def _fallback(self, line: str) -> list[str]:
         # try compositional parse before giving up; a parsed frame still
         # needs explicit 确认 (use 理解 to keep one entry point)
         try:
             fr = parse_sentence(line, source="user",
-                               lexicon=self._lexicon())
+                               lexicon=self._lexicon(),
+                               phrase_rules=self._phrase_rules())
         except Exception:
             fr = None
         if fr is not None and fr.intent != "unknown":

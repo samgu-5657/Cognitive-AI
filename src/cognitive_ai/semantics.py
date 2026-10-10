@@ -102,11 +102,16 @@ def _clean_np(np: str) -> str:
 
 
 def parse_sentence(sentence: str, source: str = "user",
-                   lexicon: dict | None = None) -> SemanticFrame:
+                   lexicon: dict | None = None,
+                   phrase_rules: list[dict] | None = None) -> SemanticFrame:
     """Compositional parse. Slot patterns only; no sentence hardcodes.
 
     lexicon: learned word->key mappings (experience first, built-ins
     as fallback). None behaves exactly like the built-in map.
+    phrase_rules: ACTIVE learned rewrite rules (Phase 6C). They apply
+    ONLY when the direct parse is unknown (fallback): a directly parsed
+    sentence is never reshaped. At most one rewrite; ambiguous matches
+    abstain with an explicit note.
     """
     raw = sentence
     s = _strip_punct(sentence)
@@ -114,6 +119,32 @@ def parse_sentence(sentence: str, source: str = "user",
     if not s:
         fr.trace.append("empty input")
         return fr
+    if phrase_rules:
+        # Learned rewrites are strictly a FALLBACK: a directly parseable
+        # sentence is never reshaped. Consult the direct (rule-free) parse
+        # first; only an unknown direct result may use one rewrite.
+        from .phraselearn import apply_rules
+        direct = parse_sentence(s, source, lexicon, None)
+        if direct.intent != "unknown":
+            return direct
+        tried = apply_rules(s, phrase_rules, lexicon or {})
+        if tried.get("rewritten"):
+            inner = parse_sentence(tried["rewritten"], source,
+                                   lexicon, None)
+            if inner.intent != "unknown":
+                inner.trace.append(
+                    f"phrase_rule:{tried['rule_id']} rewrote "
+                    f"{s!r} -> {tried['rewritten']!r}")
+                inner.confidence = round(max(0.0, inner.confidence - 0.05),
+                                         3)
+                inner.raw = raw
+                return inner
+            fr.trace.append(f"phrase_rule:{tried['rule_id']} rewrite "
+                            "did not parse; kept direct result")
+        elif tried.get("reason") == "ambiguous: rules disagree":
+            fr.ambiguities.append(
+                f"learned rewrites disagree {tried.get('rules')}; abstaining")
+            fr.trace.append("phrase_rule ambiguity -> no rewrite")
     # 1. interrogative? 吗/呢 only sentence-finally (的话呢哈哈 is not a
     # question); content question words count anywhere. Recorded FIRST but
     # applied LAST: slots still parse (杯子的材质是什么 keeps entities),
