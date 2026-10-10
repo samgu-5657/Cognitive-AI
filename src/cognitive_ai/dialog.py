@@ -637,8 +637,15 @@ def _cx_followup(session, text: str) -> dict | None:
         if rep.get("validated"):
             lines.append("以下候选已通过留存验证（仍待显式激活）："
                          + "、".join(rep["validated"]) + "。")
-        lines.append("注意：这只是候选规律，不是已验证知识；"
-                     "用“构式激活 <id>”显式激活后才参与理解。")
+        if rep.get("auto_activated"):
+            lines.append("以下构式已满足证据门槛并自动激活，可直接使用："
+                         + "、".join(rep["auto_activated"]) + "。")
+        if rep.get("conflicts"):
+            lines.append("发现与已激活构式矛盾的新证据，已将其降级停用："
+                         + "、".join(c["rule"] for c in rep["conflicts"])
+                         + "（双方证据均保留，未做取舍）。")
+        lines.append("注意：自动激活只发生在留存证据达标时；"
+                     "用“构式激活 <id>”仍可手动激活已验证候选。")
         return {"text": "\n".join(lines), "certainty": "unknown",
                 "citations": []}
     if s in ("取消", "算了", "不对", "不是", "不要", "放弃"):

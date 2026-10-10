@@ -437,10 +437,13 @@ def auto_learn_step(mem) -> dict:
                 "evaluation", f"auto construction candidate {rid}",
                 {"op": "cx_auto_induce", "rule_id": rid})
             report["induced"].append(rid)
-    # validate-ready: candidates with later, fresh-entity evidence.
-    # pair_ids pin the exact training rows, so later pairs (greater id,
-    # unseen entities) serve as the held-out set.
-    for row in mem.list_constructions(status="candidate"):
+    # validate-ready: candidates AND validated auto-rows accumulate
+    # later, fresh-entity evidence into the ledger. Candidate rows get
+    # promoted on a full pass; validated rows only grow the ledger
+    # toward the auto-activation threshold below.
+    for row in mem.list_constructions(status="candidate") + \
+            [r for r in mem.list_constructions(status="validated")
+             if _is_auto(r)]:
         try:
             ev = row.get("evidence", [])
             used = set()
@@ -453,7 +456,8 @@ def auto_learn_step(mem) -> dict:
         train_ents = {q["entity"] for q in list_pairs(mem)
                       if q["id"] in used}
         held = [{"src": q["src"], "entity": q["entity"],
-                 "value": q["value"]} for q in list_pairs(mem)
+                 "value": q["value"], "pair_id": q["id"]}
+                for q in list_pairs(mem)
                 if q["id"] not in used and
                 q["entity"] not in train_ents]
         if not held:
@@ -462,7 +466,126 @@ def auto_learn_step(mem) -> dict:
         row["report"] = {**row.get("report", {}), **rep,
                          "auto_validated": True}
         if rep["passed"]:
-            row["status"] = "validated"
-            report["validated"].append(row["id"])
+            if row["status"] == "candidate":
+                row["status"] = "validated"
+                report["validated"].append(row["id"])
+            _ledger_add(row, held)
+        else:
+            fails = row.get("report", {}).get("heldout_failures", []) or []
+            fails = list(fails) + [h.get("pair_id") for h in held
+                                   if h.get("pair_id") is not None]
+            row["report"] = {**row.get("report", {}),
+                             "heldout_failures": fails}
         mem.save_construction(row)
+    # auto-activation (Phase 6H-2D): validated auto-rules whose ledger
+    # reaches 3+ independent held-out passes over >=2 entities and >=2
+    # values activate WITHOUT a manual command, with a full audit
+    # event. Anything below threshold stays put.
+    for row in mem.list_constructions(status="validated"):
+        if not _is_auto(row):
+            continue
+        if _maybe_auto_activate(mem, row):
+            report.setdefault("auto_activated", []).append(row["id"])
+    # conflict watch (Phase 6H-2D): a later confirmed pair that matches
+    # an ACTIVE auto-rule's affix but disagrees on roles is credible
+    # counter-evidence. Record it and demote to validated (stop using
+    # the rule) -- never silently let either side win.
+    for row in mem.list_constructions(status="active"):
+        if not _is_auto(row):
+            continue
+        _conflict_watch(mem, row, report)
     return report
+
+
+def _is_auto(row: dict) -> bool:
+    try:
+        return any((e or {}).get("source") == "auto-dialogue"
+                   for e in row.get("evidence", []) or [])
+    except Exception:
+        return False
+
+
+# Evidence-constrained auto-activation thresholds (Phase 6H-2D).
+# Counted from persisted pair ids, never memory counters or text.
+MIN_HELDOUT_PASSES = 3
+MIN_HELDOUT_ENTITIES = 2
+MIN_HELDOUT_VALUES = 2
+
+
+def _ledger_add(row: dict, held: list) -> None:
+    have = set(row.get("report", {}).get("heldout_pass_ids", []) or [])
+    for h in held:
+        if h.get("pair_id") is not None:
+            have.add(h["pair_id"])
+    row["report"] = {**row.get("report", {}),
+                     "heldout_pass_ids": sorted(have)}
+
+
+def _maybe_auto_activate(mem, row: dict) -> bool:
+    """Activate a validated auto-rule iff its persisted ledger meets
+    3+ passes / 2+ entities / 2+ values. Returns True on activation."""
+    import time as _time
+    try:
+        ids = set(row.get("report", {}).get("heldout_pass_ids", []) or [])
+        pairs = [q for q in list_pairs(mem) if q["id"] in ids]
+        if len(pairs) < MIN_HELDOUT_PASSES:
+            return False
+        if len({q["entity"] for q in pairs}) < MIN_HELDOUT_ENTITIES:
+            return False
+        if len({q["value"] for q in pairs}) < MIN_HELDOUT_VALUES:
+            return False
+    except Exception:
+        return False
+    row["status"] = "active"
+    mem.save_construction(row)
+    mem.add_experience(
+        "evaluation", f"auto-activated construction {row['id']}",
+        {"op": "cx_auto_activate", "rule_id": row["id"],
+         "evidence_pair_ids": sorted(ids),
+         "reason": f"{len(pairs)} independent held-out passes over "
+         f"{len({q['entity'] for q in pairs})} entities and "
+         f"{len({q['value'] for q in pairs})} values",
+         "lifecycle": "validated->active",
+         "at": _time.time()})
+    return True
+
+
+def _conflict_watch(mem, row: dict, report: dict) -> None:
+    """Demote an active auto-rule on credible counter-evidence."""
+    try:
+        ev = row.get("evidence", [])
+        used = set()
+        for e in ev if isinstance(ev, list) else []:
+            used.update((e or {}).get("pair_ids", []) or [])
+        seen = set(row.get("report", {}).get("conflict_pair_ids", []) or [])
+        probe = [{**row, "status": "active"}]
+        for q in list_pairs(mem):
+            if q["id"] in used or q["id"] in seen:
+                continue
+            hits = match(q["src"], probe)
+            if not hits:
+                continue  # different affix: not evidence about this rule
+            _, ent, val = hits[0]
+            if ent == q["entity"] and val == q["value"]:
+                continue  # agrees: no conflict
+            seen.add(q["id"])
+            row["status"] = "validated"
+            row["report"] = {**row.get("report", {}),
+                             "conflict_pair_ids": sorted(seen)}
+            mem.save_construction(row)
+            mem.add_experience(
+                "evaluation",
+                f"construction conflict on {row['id']}: demoted",
+                {"op": "cx_conflict", "rule_id": row["id"],
+                 "pair_id": q["id"], "expected": [q["entity"], q["value"]],
+                 "got": [ent, val]})
+            report.setdefault("conflicts", []).append(
+                {"rule": row["id"], "pair_id": q["id"]})
+            return
+        if seen != set(row.get("report", {}).get(
+                "conflict_pair_ids", []) or []):
+            row["report"] = {**row.get("report", {}),
+                             "conflict_pair_ids": sorted(seen)}
+            mem.save_construction(row)
+    except Exception:
+        pass
