@@ -171,7 +171,50 @@ def construct(text: str, rules: list[dict]) -> dict | None:
     return build_frame(kind, mid, key, text, rule["id"])
 
 
-def validate_rule(rule: dict, heldout: list[dict]) -> dict:
+def check_vocab_consistency(rule: dict) -> dict:
+    """Kind-vs-affix cross-check (Phase 6F, Task 2/3).
+
+    The rule claims affix (pre/suf) expresses (kind,key). If the affix
+    itself contains a KNOWN vocabulary word for a different key, the
+    label contradicts established evidence:
+      affix has 材质/材料... (ATTR_WORDS -> material) but rule is not
+        attr_q/material  -> conflict;
+      affix has 用途/用处/功能 (function words) but rule key is not
+        function          -> conflict;
+      affix names the has-feature itself (把手 in affix, feature 把手)
+        -> consistent.
+    Affixes with no known words carry no signal -> pass with a note
+    (honest limit: form-consistent mislabels without known words are
+    NOT detectable; the report says so instead of claiming otherwise).
+    """
+    from .semantics import ATTR_WORDS
+    affix = (rule.get("pre", "") or "") + "|" + (rule.get("suf", "") or "")
+    kind, key = rule.get("kind"), rule.get("key")
+    for word, mapped in ATTR_WORDS.items():
+        if word and word in affix:
+            # the affix names a known attribute word: the rule key must
+            # be exactly what that word means (用途->function,
+            # 材质->material, ...), whatever the claimed kind.
+            if key == mapped:
+                return {"ok": True,
+                        "reason": f"affix names {word}->{mapped}, matches"}
+            if kind == "has_q" and key and key in affix:
+                return {"ok": True,
+                        "reason": "affix consistent with has-feature"}
+            return {"ok": False,
+                    "reason": f"label conflict: affix contains known word "
+                    f"{word!r} (-> {mapped}) but rule claims "
+                    f"{kind}/{key}"}
+    if kind == "has_q" and key and key in affix:
+        return {"ok": True, "reason": "affix names the feature itself"}
+    return {"ok": True,
+            "reason": "no known vocabulary in affix; consistency "
+            "undecidable from form alone (mislabels here are NOT "
+            "detectable -- reported, not claimed)"}
+
+
+def validate_rule(rule: dict, heldout: list[dict],
+                  contrast: list | None = None) -> dict:
     """Held-out check on raw labels: kind/entity/key must match exactly."""
     if not heldout:
         return {"passed": False, "reason": "no held-out examples",
@@ -190,9 +233,25 @@ def validate_rule(rule: dict, heldout: list[dict]) -> dict:
             ok = rq.get("kind") == rule["kind"] and \
                 rq.get("key") == rule["key"]
         detail.append({"src": h["src"], "ok": bool(ok)})
-    passed = all(d["ok"] for d in detail)
-    return {"passed": passed, "checked": len(detail), "detail": detail,
-            "reason": "" if passed else "held-out mismatch"}
+    if not all(d["ok"] for d in detail):
+        return {"passed": False, "checked": len(detail), "detail": detail,
+                "contrast": [], "reason": "held-out mismatch"}
+    # contrast silence: other-kind held-outs must NOT fire this rule.
+    # A rule that also accepts a different question type is ambiguous
+    # and stays a candidate until more evidence arrives.
+    contra = []
+    for c in contrast or []:
+        hit = construct(c["src"], [{**rule, "status": "active"}])
+        if hit is not None:
+            contra.append({"src": c["src"], "rule": rule["id"],
+                           "fired_kind": rule["kind"]})
+    if contra:
+        return {"passed": False, "checked": len(detail), "detail": detail,
+                "contrast": contra,
+                "reason": "contrast conflict: rule also fires on "
+                "other-kind probes; needs more evidence"}
+    return {"passed": True, "checked": len(detail), "detail": detail,
+            "contrast": [], "reason": ""}
 
 
 def activate_rule(mem, rule_id: str) -> dict:

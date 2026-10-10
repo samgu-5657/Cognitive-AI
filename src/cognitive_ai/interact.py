@@ -1099,7 +1099,24 @@ class Session:
         if not held:
             return [f"[sem] {args[0]} 无同类验证例,无法验证。",
                     "用'语义示例 <句> => 同类标注 --留存'补充后再试。"]
-        rep = SL.validate_rule(row, held)
+        # 6F gate 1: label-vs-vocabulary consistency (detects labels
+        # that contradict established word meanings, e.g. a 材质-form
+        # labeled as a function question).
+        vocab = SL.check_vocab_consistency(row)
+        if not vocab["ok"]:
+            row["report"] = {**row.get("report", {}), "vocab": vocab}
+            self.mem.save_sem_rule(row)
+            self.mem.add_experience(
+                "evaluation", f"sem validate {args[0]}: vocab conflict",
+                {"op": "sem_validate", "report": vocab})
+            return [f"[sem] {args[0]} 验证未通过: {vocab['reason']}。",
+                    "规则停在candidate；请检查标注后重新教学。"]
+        # 6F gate 2: contrast silence over other-kind held-outs.
+        contrast = [{"src": r["src"]}
+                    for r in self.mem.list_sem_examples(heldout=True)
+                    if (r["kind"], r["attrkey"]) !=
+                    (row["kind"], row["key"])]
+        rep = SL.validate_rule(row, held, contrast)
         row["report"] = {**row.get("report", {}), **rep}
         if rep["passed"]:
             row["status"] = "validated"
@@ -1111,7 +1128,9 @@ class Session:
                     "状态validated；用'语义激活'显式激活后才参与解析。"]
         self.mem.save_sem_rule(row)
         bad = [d for d in rep.get("detail", []) if not d["ok"]]
-        return [f"[sem] {args[0]} 验证未通过: {rep.get('reason')}。",
+        contra = rep.get("contrast", [])
+        extra = f"对比冲突: {contra[0]}。" if contra else ""
+        return [f"[sem] {args[0]} 验证未通过: {rep.get('reason')}。" + extra,
                 f"首个失败: {bad[0] if bad else rep}。规则停在candidate。"]
 
     def _sem_activate(self, args) -> list[str]:

@@ -207,8 +207,12 @@ def test_mislabel_never_reaches_kb(tmp_path):
                         f"kind=attr_q;entity={e};key=material --留存")
         sess.handle("语义归纳")
         for r in mem.list_sem_rules():
-            sess.handle(f"语义验证 {r['id']}")
-            sess.handle(f"语义激活 {r['id']}")
+            v = sess.handle(f"语义验证 {r['id']}")
+            # 6F gate: the USE affix contradicts a material label, so
+            # validation must refuse (not merely stay silent later)
+            assert any("验证未通过" in l for l in v), v
+            a = sess.handle(f"语义激活 {r['id']}")
+            assert any("失败" in l for l in a), a
         D.process(sess, use_f("杯子"))
         assert mem.query("SELECT COUNT(*) AS n FROM attributes")[0]["n"] \
             == n0
