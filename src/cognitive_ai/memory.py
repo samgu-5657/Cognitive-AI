@@ -196,6 +196,33 @@ CREATE TABLE IF NOT EXISTS phrase_rules(
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+-- Phase 6E: direct semantic-frame learning (additive). Labeled examples
+-- map utterances straight to frame roles (kind/entity/key); induced
+-- rules CONSTRUCT frames directly (no rewrite-and-reparse). Same
+-- candidate/validated/active gating as phrase rules; frames are queries
+-- only and never write knowledge by themselves.
+CREATE TABLE IF NOT EXISTS sem_examples(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  src TEXT NOT NULL,
+  kind TEXT NOT NULL DEFAULT '',
+  entity TEXT NOT NULL DEFAULT '',
+  attrkey TEXT NOT NULL DEFAULT '',
+  heldout INTEGER NOT NULL DEFAULT 0,
+  evidence TEXT NOT NULL DEFAULT '[]',
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS sem_rules(
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL DEFAULT '',
+  pre TEXT NOT NULL DEFAULT '',
+  suf TEXT NOT NULL DEFAULT '',
+  attrkey TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'candidate',
+  evidence TEXT NOT NULL DEFAULT '[]',
+  report TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 """
 
 # Additive per-column migrations for databases created before Phase 2.
@@ -685,6 +712,70 @@ class Memory:
         if "signature" not in out and isinstance(out.get("report"), dict) \
                 and "signature" in out["report"]:
             out["signature"] = out["report"]["signature"]
+        return out
+
+    # ---- direct semantic rules (Phase 6E): utterance -> frame roles ----
+    def add_sem_example(self, src: str, kind: str, entity: str, key: str,
+                        heldout: bool = False, evidence: str = "") -> int:
+        src, kind, entity, key = (src.strip(), kind.strip(),
+                                  entity.strip(), key.strip())
+        if not src or not kind or not entity or not key:
+            raise ValueError("src, kind, entity and key required")
+        cur = self.execute(
+            "INSERT INTO sem_examples(src,kind,entity,attrkey,heldout,"
+            "evidence,created_at) VALUES(?,?,?,?,?,?,?)",
+            (src, kind, entity, key, 1 if heldout else 0,
+             json.dumps([evidence] if evidence else [], ensure_ascii=False),
+             _utcnow()))
+        return cur.lastrowid
+
+    def list_sem_examples(self, heldout=None) -> list[dict]:
+        if heldout is None:
+            return self.query("SELECT * FROM sem_examples ORDER BY id")
+        return self.query("SELECT * FROM sem_examples WHERE heldout=? "
+                          "ORDER BY id", (1 if heldout else 0,))
+
+    def save_sem_rule(self, rule: dict) -> None:
+        now = _utcnow()
+        self.execute(
+            "INSERT INTO sem_rules(id,kind,pre,suf,attrkey,status,"
+            "evidence,report,created_at,updated_at)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?)"
+            " ON CONFLICT(id) DO UPDATE SET kind=excluded.kind,"
+            " pre=excluded.pre, suf=excluded.suf, attrkey=excluded.attrkey,"
+            " status=excluded.status, evidence=excluded.evidence,"
+            " report=excluded.report, updated_at=excluded.updated_at",
+            (rule["id"], rule.get("kind", ""), rule.get("pre", ""),
+             rule.get("suf", ""), rule.get("key", ""),
+             rule.get("status", "candidate"),
+             json.dumps(rule.get("evidence", []), ensure_ascii=False),
+             json.dumps(rule.get("report", {}), ensure_ascii=False), now,
+             now))
+
+    def get_sem_rule(self, rid: str) -> dict | None:
+        row = self.query_one("SELECT * FROM sem_rules WHERE id=?", (rid,))
+        if not row:
+            return None
+        return self._decode_sem_rule(row)
+
+    def list_sem_rules(self, status: str | None = None) -> list[dict]:
+        if status:
+            rows = self.query("SELECT * FROM sem_rules WHERE status=? "
+                              "ORDER BY id", (status,))
+        else:
+            rows = self.query("SELECT * FROM sem_rules ORDER BY id")
+        return [self._decode_sem_rule(r) for r in rows]
+
+    @staticmethod
+    def _decode_sem_rule(row: dict) -> dict:
+        out = dict(row)
+        for k in ("evidence", "report"):
+            try:
+                out[k] = json.loads(out[k]) if isinstance(out[k], str) \
+                    else out[k]
+            except Exception:
+                pass
+        out["key"] = out.pop("attrkey", "")
         return out
 
     # ---- dialogue context (per session; never shared across sessions) ----

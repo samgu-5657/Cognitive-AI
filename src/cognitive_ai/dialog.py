@@ -245,6 +245,37 @@ def process(session, text: str) -> dict:
         turn["stages"]["context"] = {
             "entities": [e.get("text", "")
                          for e in state.get("entities", [])]}
+        # Phase 6E direct-frame learning: only when the fixed parser
+        # admits unknown. construct() builds the frame field-by-field
+        # (no rewrite-and-reparse); a confident direct parse is never
+        # replaced. No active rule -> baseline behavior, untouched.
+        if frame.intent == "unknown":
+            from . import semlearn as _SL
+            _sem = getattr(session, "_sem_rules", None)
+            try:
+                built = _SL.construct(work, _sem() if _sem else [])
+            except Exception:
+                built = None
+            if built is not None:
+                from .semantics import SemanticFrame as _SF
+                frame = _SF(**{k: built[k]
+                               for k in ("intent", "entities", "predicates",
+                                         "modality", "scope", "source",
+                                         "confidence",
+                                         "unresolved_references",
+                                         "ambiguities", "raw", "trace")})
+                turn["stages"]["parse"] = frame.to_dict()
+                turn["stages"]["semlearn"] = True
+                # the constructed entity joins the session topic like any
+                # parsed one (pronouns later in the turn resolve to it)
+                try:
+                    state = update_context(state, frame)
+                    session.mem.set_context(session.session_id, state)
+                    turn["stages"]["context"] = {
+                        "entities": [e.get("text", "") for e in
+                                     state.get("entities", [])]}
+                except Exception:
+                    pass
         # bare follow-up ("为什么", "那为什么呢"): every content word is
         # a follow-up marker -> reuse the last answer; anything with real
         # content left parses fresh (content test, not char count).

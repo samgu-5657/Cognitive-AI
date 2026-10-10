@@ -124,7 +124,10 @@ def check_example(src: str, dst: str, lexicon: dict | None) -> dict:
         return {"ok": False, "reason": f"dst intent {fr.intent} out of "
                 "learning scope (query/attribute/function/classify/observe)",
                 "dst_intent": fr.intent}
-    return {"ok": True, "signature": frame_signature(fr.to_dict())}
+    subjects = [e.get("text", "") for e in fr.entities
+                if e.get("text")]
+    return {"ok": True, "signature": frame_signature(fr.to_dict()),
+            "subjects": subjects}
 
 
 def _common_affix(texts: list[str]) -> tuple[str, str]:
@@ -160,7 +163,9 @@ def induce(examples: list[dict], lexicon: dict | None = None) -> dict:
             rejected.append({"example": ex, **chk})
             continue
         key = _sig_key(chk["signature"])
-        groups.setdefault(key, []).append({**ex, "_sig": chk["signature"]})
+        groups.setdefault(key, []).append(
+            {**ex, "_sig": chk["signature"],
+             "_subjects": chk.get("subjects", [])})
     candidates = []
     for key, rows in groups.items():
         if len(rows) == 1:
@@ -177,20 +182,30 @@ def induce(examples: list[dict], lexicon: dict | None = None) -> dict:
         slot_ok = bool(pre or suf)
         mids = [s[len(pre):len(s) - len(suf) if suf else len(s)]
                 for s in srcs] if slot_ok else []
-        carry = slot_ok and all(m and m in r["dst"] for m, r in
-                               zip(mids, rows))
+        # 6E role anchoring: the slot must NAME the dst frame's subject
+        # entity (not merely occur in the dst string). A positional hole
+        # with no semantic role stays a literal -- this is what makes the
+        # learned structure compositional (X fills the subject role) and
+        # blocks affix coincidences from becoming slots.
+        def _anchored(mid: str, subjects: list) -> bool:
+            return bool(mid) and any(
+                s and (s == mid or s in mid or mid in s)
+                for s in subjects)
+        carry = slot_ok and all(
+            _anchored(m, r.get("_subjects", []))
+            for m, r in zip(mids, rows))
         if not carry:
             rejected.append({"examples": [r["src"] for r in rows],
                              "ok": False,
-                             "reason": "no shared affix with carried-over "
-                             "slot; kept as separate literals"})
+                             "reason": "slot middle is not the dst subject "
+                             "entity; kept as separate literals"})
             for r in rows:
                 candidates.append({
                     "kind": "literal", "confidence": 0.5,
                     "src_tmpl": {"text": r["src"].strip()},
                     "dst_tmpl": {"text": r["dst"].strip()},
                     "signature": r["_sig"], "support": [r],
-                    "note": "no common slot: exact match only"})
+                    "note": "no role-anchored slot: exact match only"})
             continue
         dst_t0 = rows[0]["dst"].strip().replace(mids[0], "{}", 1)
         if dst_t0.count("{}") != 1 or any(

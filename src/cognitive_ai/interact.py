@@ -50,6 +50,9 @@ ALIASES = {
     "说法": "phrase", "说法归纳": "phrase_induce",
     "说法验证": "phrase_validate", "说法激活": "phrase_activate",
     "说法列表": "phrase_list",
+    "语义示例": "sem", "语义归纳": "sem_induce",
+    "语义验证": "sem_validate", "语义激活": "sem_activate",
+    "语义列表": "sem_list",
 }
 
 TEACH_STAGES = ("attrs", "function", "category", "done")
@@ -133,6 +136,17 @@ class Session:
         except Exception:
             return []
 
+    def _sem_rules(self) -> list[dict]:
+        """Active direct-frame rules (Phase 6E).
+
+        Built by semlearn.induce from labeled examples, validated on
+        held-out entities, explicitly activated. dialog.process tries
+        them only when the fixed parser returns unknown."""
+        try:
+            return self.mem.list_sem_rules(status="active")
+        except Exception:
+            return []
+
     def handle(self, line: str) -> list[str]:
         line = (line or "").strip()
         parts = line.split()
@@ -168,6 +182,10 @@ class Session:
               "phrase_validate": self._phrase_validate,
               "phrase_activate": self._phrase_activate,
               "phrase_list": self._phrase_list,
+              "sem": self._sem, "sem_induce": self._sem_induce,
+              "sem_validate": self._sem_validate,
+              "sem_activate": self._sem_activate,
+              "sem_list": self._sem_list,
               }.get(cmd)
         if fn is None:
             return self._fallback(line)
@@ -199,6 +217,9 @@ class Session:
             "  对话/dialog <文本>           统一对话入口(寒暄/问答/追问/教学预览)",
             "  说法 <新说法> => <标准说法> [--留存]  教一种新表达(存示例,不改解析)",
             "  说法归纳/验证/激活/列表  从示例归纳改写模板并验证后显式激活",
+            "  语义示例 <原句> => kind=<k>;entity=<e>;key=<k> [--留存]",
+            "    直学语义帧(只收用途/材质/存在性三类查询,不改写句子)",
+            "  语义归纳/验证/激活/列表  从标注示例归纳槽结构并验证后激活",
             "  上下文/context  清空上下文/clear_context  会话指代记忆管理",
             "  队列/queue [pending]  审核/review <id> -- 训练样本审核",
             "  经历/历史/模型  experiences/history/model",
@@ -988,6 +1009,129 @@ class Session:
         for r in rows:
             out.append(f"  {r['id']} [{r['kind']}/{r['status']}] "
                        f"{r['src_tmpl']} -> {r['dst_tmpl']}")
+        return out
+
+    # ---- direct semantic teaching flow (Phase 6E): labeled examples ->
+    # induce (candidate) -> held-out validate -> explicit activate.
+    # Learned rules CONSTRUCT frames directly (no rewrite-and-reparse);
+    # they only answer unknown inputs and never write knowledge.
+    @staticmethod
+    def _parse_sem_label(spec: str) -> dict | None:
+        # kind=function_q;entity=杯子;key=function (no eval, fixed fields)
+        out: dict = {}
+        for chunk in spec.split(";"):
+            chunk = chunk.strip()
+            if not chunk or "=" not in chunk:
+                return None
+            k, v = chunk.split("=", 1)
+            k, v = k.strip(), v.strip()
+            if k not in ("kind", "entity", "key") or not v or k in out:
+                return None
+            out[k] = v
+        return out if set(out) == {"kind", "entity", "key"} else None
+
+    def _sem(self, args) -> list[str]:
+        # 语义示例 <原句> => kind=<k>;entity=<e>;key=<k> [--留存]
+        if "=>" not in " ".join(args):
+            return ["用法: 语义示例 <原句> => kind=<用途/材质/存在性类>;entity=<对象>;"
+                    "key=<属性键> [--留存]  (kinds: function_q/attr_q/has_q)"]
+        heldout = args[-1] == "--留存"
+        body = " ".join(args[:-1] if heldout else args)
+        src, spec = (p.strip() for p in body.split("=>", 1))
+        lab = self._parse_sem_label(spec)
+        if lab is None:
+            return ["[sem] 标注格式不对,须为 kind=<k>;entity=<e>;key=<k> "
+                    "三字段(禁多余字段与表达式)。示例未收录。"]
+        from . import semlearn as SL
+        chk = SL.check_label(lab["kind"], lab["entity"], lab["key"])
+        if not chk["ok"]:
+            return [f"[sem] 示例未收录: {chk['reason']}。"]
+        eid = self.mem.add_sem_example(
+            src, lab["kind"], lab["entity"], lab["key"], heldout,
+            evidence="chat-teach")
+        self.mem.add_experience(
+            "evaluation", f"chat sem example #{eid}",
+            {"op": "sem_teach", "heldout": heldout})
+        kind = "验证例" if heldout else "训练例"
+        return [f"[sem] 已记{kind}#{eid}: {src!r} -> {lab['kind']}/"
+                f"{lab['entity']}/{lab['key']}。",
+                "示例只存不改解析；用'语义归纳'从训练例归纳候选结构。"]
+
+    def _sem_induce(self, args) -> list[str]:
+        from . import semlearn as SL
+        trains = self.mem.list_sem_examples(heldout=False)
+        if not trains:
+            return ["训练例不足。先用'语义示例'教学(至少2个不同对象)。"]
+        rep = SL.induce(
+            [{"src": r["src"], "kind": r["kind"], "entity": r["entity"],
+              "key": r["attrkey"]} for r in trains])
+        lines = [f"[sem] 归纳完成: {len(rep['candidates'])} 候选, "
+                 f"{len(rep['rejected'])} 组被拒(已说明原因,未建规则)。"]
+        for c in rep["candidates"]:
+            rid = SL.new_rule_id("chat")
+            self.mem.save_sem_rule(
+                {"id": rid, "kind": c["kind"], "pre": c["pre"],
+                 "suf": c["suf"], "key": c["key"], "status": "candidate",
+                 "evidence": [{"source": "chat", "support": c["support"]}],
+                 "report": {"note": c["note"]}})
+            lines.append(f"  {rid} [{c['kind']}/{c['key']}] {c['note']} "
+                         f"(状态candidate,直接构帧,未验证未激活)")
+        for r in rep["rejected"]:
+            lines.append(f"  拒: {r.get('reason')}")
+        self.mem.add_experience(
+            "evaluation", "chat sem induce",
+            {"op": "sem_induce", "candidates": len(rep["candidates"])})
+        lines.append("候选须经'语义验证 <id>'(独立验证例全过)再'语义激活 <id>'"
+                     "才能参与解析。")
+        return lines
+
+    def _sem_validate(self, args) -> list[str]:
+        if not args:
+            return ["用法: 语义验证 <规则id>"]
+        from . import semlearn as SL
+        row = self.mem.get_sem_rule(args[0])
+        if not row:
+            return ["查无此规则。先用'语义列表'查看。"]
+        held = [{"src": r["src"], "entity": r["entity"]}
+                for r in self.mem.list_sem_examples(heldout=True)
+                if r["kind"] == row["kind"] and
+                r["attrkey"] == row["key"]]
+        if not held:
+            return [f"[sem] {args[0]} 无同类验证例,无法验证。",
+                    "用'语义示例 <句> => 同类标注 --留存'补充后再试。"]
+        rep = SL.validate_rule(row, held)
+        row["report"] = {**row.get("report", {}), **rep}
+        if rep["passed"]:
+            row["status"] = "validated"
+            self.mem.save_sem_rule(row)
+            self.mem.add_experience(
+                "evaluation", f"sem validate {args[0]}: passed",
+                {"op": "sem_validate", "report": rep})
+            return [f"[sem] {args[0]} 验证通过({rep['checked']}个验证例全中)。"
+                    "状态validated；用'语义激活'显式激活后才参与解析。"]
+        self.mem.save_sem_rule(row)
+        bad = [d for d in rep.get("detail", []) if not d["ok"]]
+        return [f"[sem] {args[0]} 验证未通过: {rep.get('reason')}。",
+                f"首个失败: {bad[0] if bad else rep}。规则停在candidate。"]
+
+    def _sem_activate(self, args) -> list[str]:
+        if not args:
+            return ["用法: 语义激活 <规则id>"]
+        from . import semlearn as SL
+        out = SL.activate_rule(self.mem, args[0])
+        if out.get("ok"):
+            return [f"[sem] {args[0]} 已激活,后续未知输入会尝试直接构帧"
+                    "(直接能解析的输入不受影响)。"]
+        return [f"[sem] 激活失败: {out.get('error')}"]
+
+    def _sem_list(self, args) -> list[str]:
+        rows = self.mem.list_sem_rules()
+        nex = len(self.mem.list_sem_examples())
+        out = [f"语义示例{nex}条；规则{len(rows)}条:"]
+        for r in rows:
+            out.append(f"  {r['id']} [{r['kind']}/{r['key']}/"
+                       f"{r['status']}] {r['pre']!r} + ENTITY + "
+                       f"{r['suf']!r}")
         return out
 
     def _fallback(self, line: str) -> list[str]:
