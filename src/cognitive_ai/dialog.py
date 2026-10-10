@@ -28,6 +28,67 @@ def _is_smalltalk_command(text: str) -> str | None:
     return None
 
 
+def _answer_paraphrase(session, text: str) -> dict:
+    """Render the same question roles through learned + fixed surfaces.
+
+    Input direction reuses parse/resolve (+semlearn fallback for taught
+    forms); output direction uses verbalize over the SAME (kind, key)
+    with the entity slot refilled. Roundtrip-checked by tests, not by
+    construction. Zero writes.
+    """
+    from . import verbalize as _VB
+    from .semantics import parse_sentence, resolve_question
+    if not text:
+        return {"text": "请在后面加上要换说法的问题（如：复述某物的材质疑问句）。",
+                "certainty": "unknown", "citations": []}
+    _ph = getattr(session, "_sem_rules", None)
+    rules = _ph() if _ph else []
+    frame = parse_sentence(text, source="user",
+                           lexicon=session._lexicon())
+    if frame.intent == "unknown" and rules:
+        from . import semlearn as _SL
+        try:
+            built = _SL.construct(text, rules)
+        except Exception:
+            built = None
+        if built is not None:
+            frame = _frame_from_dict(built)
+    rq = resolve_question(frame.to_dict(), session._lexicon())
+    if rq.get("kind") in ("unknown_q", "unsupported_q") or \
+            rq.get("needs_clarify"):
+        return {"text": "这句的提问类型不明确，无法换说法："
+                        + "; ".join(rq.get("defects", ["无法解析"])) + "。",
+                "certainty": "unknown", "citations": []}
+    subjects = rq.get("subjects", [])
+    entity = subjects[0] if subjects else ""
+    key = rq.get("key")
+    kind = rq.get("kind")
+    if kind == "classify_q" and "的" in entity:
+        # possessive question (考拉的材质是什么): same normalization
+        # the executor uses -- split off a known attribute word so the
+        # learned attr_q rules can fire on it. Generic, not per-sentence.
+        from .semantics import ATTR_WORDS
+        left, right = entity.rsplit("的", 1)
+        mapped = ATTR_WORDS.get(right, (session._lexicon() or {}).get(right))
+        if left and mapped:
+            kind, entity, key = "attr_q", left, mapped
+    if key:
+        for suffix in ("的" + _VB.zh_key(key), "的" + str(key)):
+            if entity.endswith(suffix) and len(entity) > len(suffix):
+                entity = entity[:-len(suffix)]
+                break
+    outs = _VB.render_question(kind, entity, key, rules,
+                               exclude=text)
+    if not outs:
+        return {"text": "这个问法没有已知的替代表达。",
+                "certainty": "unknown", "citations": []}
+    lines = ["同一问题的其他说法："]
+    for o in outs:
+        lines.append(f"  {o['text']}（来源：{o['source']}）")
+    return {"text": "\n".join(lines), "certainty": "unknown",
+            "citations": []}
+
+
 def _frame_from_dict(d: dict):
     """Rebuild a SemanticFrame from a stored dict (resume path)."""
     from .semantics import SemanticFrame as _SF
@@ -185,6 +246,14 @@ def process(session, text: str) -> dict:
             _log(session, turn)
             return turn
         first = stripped.split()[0]
+        # paraphrase (Phase 6H-2A): 复述/换个说法 + question renders the
+        # same roles through learned and fixed surfaces. Read-only.
+        if first in ("复述", "换个说法"):
+            turn["route"] = "paraphrase"
+            turn["answer"] = _answer_paraphrase(
+                session, stripped[len(first):].strip())
+            _log(session, turn)
+            return turn
         from .interact import ALIASES
         if first in ALIASES or first.lower() in (
                 "help", "quit", "concepts", "inspect", "predict", "observe",
