@@ -70,6 +70,12 @@
   链式组合+调用计数）/执行器已实际调用 learned 规则与 seed 规则
   （`apply_rule(*)` 接入概念主流程）/ `学规则`+`rule-induce/validate/
   select/list/show/rollback` 命令。
+  6A 增加：决策表 kind（有序行，缺槽跳行）+归纳失败原因
+  （evidence/representation/ambiguity）/`learnloop.run_cycle`（缺口→假设→
+  比较→验证→激活→未见测试→保留/拒绝，outcome 台账）/`world.py` 微世界
+  （物体/状态/动作/因果模拟器，学习只见示例）/可学习词典
+  （`lexicon` 表+`词义`命令，经验优先内置）/结构化问答
+  （`answer_query`，只读已激活规则）。
 - `cli.py`: 薄命令行封装，不放核心逻辑。
 - 5A 工作台：`web/service.py`（唯一后端入口，直调业务模块，禁 shell/命令
   拼接，全参数校验）/`web/server.py`（FastAPI，127.0.0.1:8765，

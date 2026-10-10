@@ -101,8 +101,13 @@ def _clean_np(np: str) -> str:
     return np
 
 
-def parse_sentence(sentence: str, source: str = "user") -> SemanticFrame:
-    """Compositional parse. Slot patterns only; no sentence hardcodes."""
+def parse_sentence(sentence: str, source: str = "user",
+                   lexicon: dict | None = None) -> SemanticFrame:
+    """Compositional parse. Slot patterns only; no sentence hardcodes.
+
+    lexicon: learned word->key mappings (experience first, built-ins
+    as fallback). None behaves exactly like the built-in map.
+    """
     raw = sentence
     s = _strip_punct(sentence)
     fr = SemanticFrame(raw=raw, source=source)
@@ -240,7 +245,7 @@ def parse_sentence(sentence: str, source: str = "user") -> SemanticFrame:
         if not m:
             continue
         fr.trace.append(f"pattern: {kind}")
-        _fill(fr, kind, m, neg=neg, hedge=hedge)
+        _fill(fr, kind, m, neg=neg, hedge=hedge, lexicon=lexicon)
         break
     else:
         # honest fallback: a lone hedge/negation marker still tells us the
@@ -286,7 +291,8 @@ def parse_sentence(sentence: str, source: str = "user") -> SemanticFrame:
     return fr
 
 
-def _fill(fr: SemanticFrame, kind: str, m, neg, hedge) -> None:
+def _fill(fr: SemanticFrame, kind: str, m, neg, hedge,
+            lexicon: dict | None = None) -> None:
     a = m.groupdict().get("a", "").strip() if "a" in m.groupdict() else ""
     b = m.groupdict().get("b", "").strip()
     # discourse fillers at subject start carry no meaning
@@ -312,7 +318,7 @@ def _fill(fr: SemanticFrame, kind: str, m, neg, hedge) -> None:
                               "denied": True})
         fr.intent, fr.modality, fr.confidence = "negate", "negate", 0.85
     elif kind == "made_of":
-        key = _canon_attr("材质")
+        key = _canon_attr("材质", lexicon)
         fr.predicates.append({"type": "attr", "subj": a, "key": key,
                               "value": b})
         if modality == "negate":
@@ -327,7 +333,7 @@ def _fill(fr: SemanticFrame, kind: str, m, neg, hedge) -> None:
             fr.confidence = 0.85
     elif kind == "negate_attr":
         fr.predicates.append({"type": "attr", "subj": a,
-                              "key": _canon_attr("材质"), "value": b,
+                              "key": _canon_attr("材质", lexicon), "value": b,
                               "denied": True})
         fr.intent, fr.modality, fr.confidence = "negate", "negate", 0.85
     elif kind in ("negate_has",):
@@ -340,11 +346,14 @@ def _fill(fr: SemanticFrame, kind: str, m, neg, hedge) -> None:
         fr.intent, fr.modality, fr.confidence = "negate", "negate", 0.8
     elif kind == "attr_copula":
         # X是Y色 -> color=Y; X是Y的 (short Y) -> material=Y (X是铁的);
-        # otherwise the key stays open with an explicit ambiguity.
+        # learned word mappings resolve longer values; otherwise the key
+        # stays open with an explicit ambiguity.
         if b.endswith("色"):
             key, val, amb = "color", b, None
         elif len(b) <= 4:
             key, val, amb = "material", b, None
+        elif lexicon and b in lexicon:
+            key, val, amb = lexicon[b], b, None
         else:
             key, val, amb = None, b, (f"attribute key for '{b}' unclear; "
                                       "needs mapping")
@@ -363,8 +372,10 @@ def _fill(fr: SemanticFrame, kind: str, m, neg, hedge) -> None:
             if amb:
                 fr.ambiguities.append(amb)
     elif kind == "has":
-        fr.predicates.append({"type": "has", "subj": a,
-                              "feature": _clean_np(b)})
+        feat = _clean_np(b)
+        if lexicon and feat in lexicon:
+            feat = lexicon[feat]
+        fr.predicates.append({"type": "has", "subj": a, "feature": feat})
         if modality == "negate":
             fr.intent, fr.modality = "negate", "negate"
             fr.predicates[-1]["denied"] = True
@@ -402,15 +413,24 @@ def _fill(fr: SemanticFrame, kind: str, m, neg, hedge) -> None:
         fr.confidence = 0.85
 
 
-def _canon_attr(word: str) -> str:
+def _canon_attr(word: str, lex: dict | None = None) -> str:
+    if lex and word in lex:
+        return lex[word]
     return ATTR_WORDS.get(word, word)
 
 
-def canonicalize_predicate(pred: dict) -> dict:
-    """Map Chinese attr words inside a predicate to canonical KB keys."""
+def canonicalize_predicate(pred: dict,
+                             lex: dict | None = None) -> dict:
+    """Map Chinese attr words inside a predicate to canonical KB keys.
+
+    Learned mappings (lex) win over built-ins: experience beats defaults.
+    """
     p = dict(pred)
     for k in ("key", "action", "feature"):
         if k in p and isinstance(p[k], str):
+            if lex and p[k] in lex:
+                p[k] = lex[p[k]]
+                continue
             for zh, en in ATTR_WORDS.items():
                 if p[k] == zh:
                     p[k] = en

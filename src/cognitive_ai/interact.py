@@ -45,7 +45,7 @@ ALIASES = {
     "取消": "cancel", "理解": "understand", "确认": "confirm",
     "上下文": "context", "清空上下文": "clear_context",
     "解题": "solve", "求解": "solve", "任务": "task",
-    "学规则": "rule_learn",
+    "学规则": "rule_learn", "词义": "lex",
 }
 
 TEACH_STAGES = ("attrs", "function", "category", "done")
@@ -111,6 +111,13 @@ class Session:
         return self._ood_bundle
 
     # ---- entry ----
+    def _lexicon(self) -> dict:
+        try:
+            return {r["word"]: r["key"]
+                    for r in self.mem.list_mappings()}
+        except Exception:
+            return {}
+
     def handle(self, line: str) -> list[str]:
         line = (line or "").strip()
         parts = line.split()
@@ -140,7 +147,7 @@ class Session:
               "understand": self._understand, "confirm": self._confirm,
               "context": self._context, "clear_context": self._clear_context,
               "solve": self._solve, "task": self._task,
-              "rule_learn": self._rule_learn,
+              "rule_learn": self._rule_learn, "lex": self._lex,
               }.get(cmd)
         if fn is None:
             return self._fallback(line)
@@ -168,6 +175,7 @@ class Session:
             "  解题/solve <问题>             统一认知执行(数学/概念/逻辑)",
             "  任务/task <id>                查看已保存任务的推理轨迹",
             "  学规则/rule_learn <名称> <领域>  分步提交示例并归纳候选规则",
+            "  词义/lex <词语> <标准键>      教一个属性词映射(如 把手 has_handle)",
             "  上下文/context  清空上下文/clear_context  会话指代记忆管理",
             "  队列/queue [pending]  审核/review <id> -- 训练样本审核",
             "  经历/历史/模型  experiences/history/model",
@@ -499,7 +507,8 @@ class Session:
         if not args:
             return ["用法: 理解 <中文句子>  (解析后用'确认'执行)"]
         text = " ".join(args)
-        frame = parse_sentence(text, source="user")
+        frame = parse_sentence(text, source="user",
+                               lexicon=self._lexicon())
         state = self.mem.get_context(self.session_id)
         frame = resolve_frame(frame, state)
         if frame.intent == "unknown":
@@ -821,11 +830,26 @@ class Session:
             lines.append(f"歧义未解:用 rule-select {rid} <编号> 选择后再验证。")
         return lines
 
+    def _lex(self, args) -> list[str]:
+        # 词义 <词语> <标准键>: learn one lexical mapping (recorded).
+        if len(args) < 2:
+            rows = self.mem.list_mappings()
+            return ["已学映射:" + (", ".join(
+                f"{r['word']}->{r['key']}" for r in rows) or "(无)"),
+                    "用法: 词义 <词语> <标准键>"]
+        word, key = args[0], args[1]
+        self.mem.learn_mapping(word, key, evidence="chat-teach")
+        self.mem.add_experience(
+            "evaluation", f"chat lexicon: {word}->{key}",
+            {"op": "lexical", "word": word, "key": key})
+        return [f"[lexical] 已记住 {word}->{key},后续解析即用(经验已记)。"]
+
     def _fallback(self, line: str) -> list[str]:
         # try compositional parse before giving up; a parsed frame still
         # needs explicit 确认 (use 理解 to keep one entry point)
         try:
-            fr = parse_sentence(line, source="user")
+            fr = parse_sentence(line, source="user",
+                               lexicon=self._lexicon())
         except Exception:
             fr = None
         if fr is not None and fr.intent != "unknown":

@@ -33,13 +33,17 @@ def make_spec(kind: str, name: str, domain: str, inputs: dict,
               pre: list, out: dict, scope: dict | None = None,
               positives: list | None = None,
               negatives: list | None = None, evidence: list | None = None,
-              steps: list | None = None) -> dict:
-    """Structured spec constructor. No prose-only rules possible."""
-    if kind not in ("slot", "transform"):
+              steps: list | None = None, rows: list | None = None) -> dict:
+    """Structured spec constructor. No prose-only rules possible.
+
+    kinds: slot | transform | decision_list. A decision_list carries
+    ordered `rows` [{pre, out}]; the interpreter tries rows in order.
+    """
+    if kind not in ("slot", "transform", "decision_list"):
         raise ValueError(f"unsupported rule kind {kind!r}")
     return {"kind": kind, "name": name, "domain": domain,
             "inputs": inputs, "pre": pre or [], "out": out,
-            "steps": steps or [],
+            "steps": steps or [], "rows": rows or [],
             "scope": scope or {"applies_to": [domain], "exceptions": []},
             "positives": positives or [], "negatives": negatives or [],
             "evidence": evidence or []}
@@ -172,6 +176,35 @@ def run_rule(spec: dict, inputs: dict, ontology=None) -> dict:
     status ok | pre_failed | unsupported. Never raises on bad input."""
     trace = []
     try:
+        if spec.get("kind") == "decision_list":
+            bindings = dict(inputs)
+            for i, row in enumerate(spec.get("rows", [])):
+                # missing slots mean "row does not fire", not an error:
+                # closed-world row skipping (documented limitation)
+                need = {a[1:] for c in row.get("pre", [])
+                        for a in c.get("args", [])
+                        if isinstance(a, str) and a.startswith("$")}
+                if not need <= set(bindings):
+                    trace.append({"row": i, "matched": False,
+                                  "reason": "missing slots"})
+                    continue
+                try:
+                    hit = all(_check_pred(c["pred"], c.get("args", []),
+                                          bindings, ontology)
+                              for c in row.get("pre", []))
+                except Unsupported as e:
+                    return {"status": "unsupported", "output": None,
+                            "trace": trace + [{"row": i, "error": str(e)}]}
+                trace.append({"row": i, "matched": hit})
+                if hit:
+                    out = row.get("out", {})
+                    return {"status": "ok",
+                            "output": {"kind": out.get("kind"),
+                                       "label": out.get("label"),
+                                       "attr": out.get("attr"),
+                                       "value": out.get("value")},
+                            "trace": trace}
+            return {"status": "pre_failed", "output": None, "trace": trace}
         if spec.get("kind") == "slot":
             bindings = dict(inputs)
             for cond in spec.get("pre", []):
@@ -367,6 +400,8 @@ def propose_conjunction(positives: list[dict], negatives: list[dict],
     shared = set(positives[0]["inputs"].items())
     for e in positives[1:]:
         shared &= set(e["inputs"].items())
+    if not shared:
+        return []  # nothing in common: no conjunction exists (not a crash)
     shared = sorted(shared)
     # greedy set cover: at each step take the shared attribute excluding
     # the most remaining negatives (a condition matching every negative
@@ -407,18 +442,123 @@ def propose_conjunction(positives: list[dict], negatives: list[dict],
                  negatives=[e.get("id", "") for e in negatives])}]
 
 
+def propose_decision_list(positives: list[dict],
+                          negatives: list[dict]) -> list[dict]:
+    """Separate-and-conquer: one ordered row per label, each covering its
+    positives while excluding negatives AND other labels' positives.
+    Rows ordered by coverage desc; no default row (unmatched refuses)."""
+    by_label: dict[str, list] = {}
+    for e in positives:
+        by_label.setdefault(_freeze(e["outputs"].get("label")), []).append(e)
+    if len(by_label) < 2:
+        return []  # single class needs no decision list
+    rows = []
+    for label, pos in sorted(by_label.items(),
+                             key=lambda kv: -len(kv[1])):
+        others = [e for l, es in by_label.items() if l != label
+                  for e in es] + list(negatives)
+        shared = set(pos[0]["inputs"].items())
+        for e in pos[1:]:
+            shared &= set(e["inputs"].items())
+        cover = _cover_conjunction(sorted(shared), pos, others)
+        if not cover:
+            return []
+        rows.append({"pre": cover, "out": {"kind": "label", "label": label},
+                     "covers": [e.get("id", "") for e in pos]})
+    inputs: dict[str, str] = {}
+    for e in positives:
+        for k in e["inputs"]:
+            inputs.setdefault(k, "any")
+    return [{"form": " ELSE ".join(
+                "(" + " AND ".join(f"{c['args'][0]}={c['args'][1]!r}"
+                                   for c in r["pre"]) + f") -> {r['out']['label']}"
+                for r in rows),
+             "spec": make_spec(
+                 "decision_list", "dl", "concepts", inputs, [],
+                 {"kind": "label"},
+                 rows=rows,
+                 positives=[e.get("id", "") for e in positives],
+                 negatives=[e.get("id", "") for e in negatives])}]
+
+
+def _cover_conjunction(shared: list, pos: list, negs: list) -> list:
+    chosen, remaining, unused = [], list(negs), list(shared)
+    while remaining and unused:
+        scored = []
+        for k, v in unused:
+            excluded = sum(1 for n in remaining if n["inputs"].get(k) != v)
+            scored.append((excluded, k, v))
+        scored.sort(reverse=True)
+        best, bk, bv = scored[0]
+        if best <= 0:
+            return []
+        chosen.append({"pred": "equals", "args": [f"${bk}", bv]})
+        unused = [(k, v) for k, v in unused if not (k == bk and v == bv)]
+        remaining = [n for n in remaining if n["inputs"].get(bk) == bv]
+    return chosen if not remaining else []
+
+
+def diagnose(examples: list[dict], negatives: list | None = None,
+             domain: str = "math") -> dict:
+    """Explain WHY induction produced nothing (or little).
+
+    reasons: evidence (too few/contradictory examples),
+    representation (no proposer covers this shape),
+    ambiguity is reported by induce(), not here.
+    """
+    negatives = negatives or []
+    reasons = []
+    if len(examples) < 2:
+        reasons.append({"kind": "evidence",
+                        "detail": "need >= 2 positive examples"})
+    if domain == "math":
+        numeric = 0
+        for e in examples:
+            try:
+                _num(e["inputs"].get("n", e["inputs"]))
+                _num(e["outputs"].get("out", e["outputs"]))
+                numeric += 1
+            except (Unsupported, KeyError, AttributeError, TypeError):
+                pass
+        if numeric < 2:
+            reasons.append({"kind": "representation",
+                            "detail": "math proposers need >= 2 numeric "
+                                      "(input, output) pairs"})
+    else:
+        labels = {_freeze(e["outputs"].get("label")) for e in examples}
+        if len(labels) > 4:
+            reasons.append({"kind": "representation",
+                            "detail": f"{len(labels)} distinct labels; "
+                                      "decision lists cover few classes well"})
+    if not reasons:
+        reasons.append({"kind": "representation",
+                        "detail": "no proposer covers this example shape; "
+                                  "try counterexamples or narrower scope"})
+    return {"reasons": reasons}
+
+
 def induce(examples: list[dict], negatives: list[dict] | None = None,
            domain: str = "math", in_slot="n",
            out_slot="out") -> dict:
     """Propose candidate rules from examples. Returns ALL consistent
-    candidates with coverage -- ambiguity is reported, never hidden."""
+    candidates with coverage -- ambiguity is reported, never hidden.
+    `failures` explains per-proposer dead ends (evidence vs
+    representation); check diagnose() for empty results."""
     negatives = negatives or []
     cands = []
+    failures = []
     if domain == "math":
-        cands += [{"proposer": "affine", **c}
-                  for c in propose_affine(examples, in_slot, out_slot)]
-        cands += [{"proposer": "modular", **c}
-                  for c in propose_modular(examples, in_slot, out_slot)]
+        aff = propose_affine(examples, in_slot, out_slot)
+        cands += [{"proposer": "affine", **c} for c in aff]
+        if not aff:
+            failures.append({"proposer": "affine",
+                             "reason": "points not collinear or < 2 numeric"})
+        mod = propose_modular(examples, in_slot, out_slot)
+        cands += [{"proposer": "modular", **c} for c in mod]
+        if not mod:
+            failures.append({"proposer": "modular",
+                             "reason": "inconsistent mapping or "
+                                       "single-example residues"})
     else:
         labels = {}
         for e in examples:
@@ -426,14 +566,24 @@ def induce(examples: list[dict], negatives: list[dict] | None = None,
         for label, pos in labels.items():
             for c in propose_conjunction(pos, negatives, label):
                 cands.append({"proposer": "conjunction", **c})
+        dl = propose_decision_list(examples, negatives)
+        cands += [{"proposer": "decision_list", **c} for c in dl]
+        if not dl and len(labels) >= 2:
+            failures.append({"proposer": "decision_list",
+                             "reason": "no ordered cover separates labels"})
     # consistency filter: candidate must cover every positive and no negative
     kept = []
     for c in cands:
         if all(_covers_candidate(c["spec"], e) for e in examples) and \
                 not any(_covers_candidate(c["spec"], n) for n in negatives):
             kept.append(c)
+    if not kept:
+        failures.append({"kind": "evidence",
+                         "detail": "no consistent candidate; supply "
+                                   "counterexamples or narrower scope"})
     return {"candidates": kept,
             "ambiguous": len(kept) > 1,
+            "failures": failures,
             "note": "multiple consistent rules; supply counterexamples"
                     if len(kept) > 1 else ""}
 
@@ -450,8 +600,32 @@ def apply_spec(spec: dict, inputs: dict, ontology=None) -> dict:
     return run_rule(spec, inputs, ontology)
 
 
+def answer_query(slots: dict, memory, ontology=None) -> dict:
+    """Answer a structured slot question from ACTIVE learned rules.
+
+    Tries active rules in id order; first firing rule wins. Returns
+    {status: answered|unknown, answer, rule_id} or unknown with the
+    reason. Pure query: writes nothing, changes no counters. (The NL
+    sentence-to-slots bridge is a documented future step; callers pass
+    slots explicitly and say so.)
+    """
+    for row in memory.list_rules_learned(status="active"):
+        try:
+            spec = selected_spec(row)
+        except Unsupported:
+            continue
+        res = apply_spec(spec, slots, ontology)
+        if res["status"] == "ok" and res.get("output"):
+            out = res["output"]
+            return {"status": "answered",
+                    "answer": out.get("label", out.get("value", out)),
+                    "rule_id": row["id"], "trace": res["trace"]}
+    return {"status": "unknown", "reason": "no active rule fired",
+            "answer": None, "rule_id": None}
+
+
 def _covers_candidate(spec: dict, example: dict, ontology=None) -> bool:
-    if spec["kind"] == "slot":
+    if spec["kind"] in ("slot", "decision_list"):
         r = run_rule(spec, example["inputs"], ontology)
         if r["status"] != "ok" or r["output"] is None:
             return False

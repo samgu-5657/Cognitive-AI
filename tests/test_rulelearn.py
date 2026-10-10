@@ -130,6 +130,26 @@ def test_no_eval_or_codegen_surface():
     assert "__import__" not in src
 
 
+def test_decision_list_multi_class(tmp_path):
+    pos = [ex("a", {"color": "red", "shape": "round", "origin": "tree"},
+              {"label": "apple"}),
+           ex("b", {"color": "yellow", "shape": "long"}, {"label": "banana"}),
+           ex("c", {"color": "red", "shape": "round", "origin": "tree",
+                    "size": "big"}, {"label": "apple"})]
+    negs = [ex("n", {"color": "red", "shape": "round", "origin": "factory"},
+               {"label": "ball"})]
+    rep = RL.induce(pos, negs, domain="concepts")
+    kinds = {c["proposer"] for c in rep["candidates"]}
+    assert "decision_list" in kinds, rep
+    dl = [c for c in rep["candidates"]
+          if c["proposer"] == "decision_list"][0]
+    val = RL.validate_rule(dl["spec"], pos, pos[:1], negs)
+    assert val["passed"], val
+    # unmatched input refuses instead of guessing
+    r = RL.apply_spec(dl["spec"], {"color": "blue", "shape": "square"})
+    assert r["status"] == "pre_failed"
+
+
 # ---- experiments A-D ----
 def _mem(tmp_path, tag):
     from cognitive_ai.cli import seed_from_json

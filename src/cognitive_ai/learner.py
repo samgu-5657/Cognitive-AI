@@ -133,9 +133,12 @@ class Learner:
             result["updated_concept"] = {"id": cid, "added": added}
         # evaluate: did conflicts grow?
         result["conflicts"] = self.reasoner.check_conflicts()
+        # outcome bookkeeping (Phase 6A Task 8): fact vs concept learned
+        result["outcome"] = "concept" if result.get("new_concept") else "fact"
         self.mem.add_experience("evaluation",
                                 f"learned from {name}",
-                                {"result": _jsonable(result)})
+                                {"result": _jsonable(result),
+                                 "outcome": result["outcome"]})
         return result
 
     # ---- research one question ----

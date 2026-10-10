@@ -164,6 +164,13 @@ CREATE TABLE IF NOT EXISTS analogy_feedback(
   correction TEXT NOT NULL DEFAULT '{}',
   created_at TEXT NOT NULL
 );
+-- Phase 6A: learned word -> canonical key mappings (additive)
+CREATE TABLE IF NOT EXISTS lexicon(
+  word TEXT PRIMARY KEY,
+  key TEXT NOT NULL,
+  evidence TEXT NOT NULL DEFAULT '[]',
+  created_at TEXT NOT NULL
+);
 """
 
 # Additive per-column migrations for databases created before Phase 2.
@@ -554,6 +561,35 @@ class Memory:
             elif eff == "penalize":
                 adj[cid] = adj.get(cid, 0.0) - 0.3
         return adj
+
+    # ---- learned lexicon (Phase 6A): word -> canonical key ----
+    def learn_mapping(self, word: str, key: str, evidence: str = "") -> None:
+        word, key = word.strip(), key.strip()
+        if not word or not key:
+            raise ValueError("word and key required")
+        row = self.query_one("SELECT * FROM lexicon WHERE word=?", (word,))
+        ev = []
+        if row:
+            try:
+                ev = json.loads(row["evidence"])
+            except Exception:
+                ev = []
+        if evidence and evidence not in ev:
+            ev.append(evidence)
+        self.execute(
+            "INSERT INTO lexicon(word,key,evidence,created_at)"
+            " VALUES(?,?,?,?)"
+            " ON CONFLICT(word) DO UPDATE SET key=excluded.key,"
+            " evidence=excluded.evidence",
+            (word, key, json.dumps(ev, ensure_ascii=False), _utcnow()))
+
+    def lookup_mapping(self, word: str) -> Optional[str]:
+        row = self.query_one("SELECT key FROM lexicon WHERE word=?",
+                             (word.strip(),))
+        return row["key"] if row else None
+
+    def list_mappings(self) -> list[dict]:
+        return self.query("SELECT * FROM lexicon ORDER BY word")
 
     # ---- dialogue context (per session; never shared across sessions) ----
     def get_context(self, session: str) -> dict:
