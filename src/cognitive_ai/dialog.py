@@ -236,6 +236,16 @@ def process(session, text: str) -> dict:
             turn["answer"] = _define_followup(session, stripped)
             _log(session, turn)
             return turn
+        # pending auto-discovery proposal (Phase 6H-2C): 确认 records a
+        # trusted pair + runs the auto step; 取消 drops it with an audit;
+        # anything else abandons the proposal and flows through normally.
+        if getattr(session, "pending_cx", None):
+            ans = _cx_followup(session, stripped)
+            if ans is not None:
+                turn["route"] = "teach_confirm"
+                turn["answer"] = ans
+                _log(session, turn)
+                return turn
         # post-confirm capability amendment (Phase 6G-1收尾): 修改光盒2=…
         # or 修改功能2=… (topic concept). Touches one row/claim only.
         mam = re.match(r"^修改\s*(.+)$", stripped)
@@ -557,12 +567,31 @@ def process(session, text: str) -> dict:
                         f"输入“确认”执行，“取消”放弃；确认前不写入任何内容。",
                 "certainty": "unknown", "citations": []}
         else:
-            turn["route"] = "unknown"
-            turn["answer"] = {
-                "text": "这句话我暂时无法理解（只支持帮助中列出的命令与"
-                        "常见陈述/疑问句式）。请换一种表达，或用“观察 "
-                        "<名称> 属性=值”结构化输入。本次未写入任何内容。",
-                "certainty": "unknown", "citations": []}
+            # auto-discovery (Phase 6H-2C): unknown + aligned known
+            # entity/value -> propose an interpretation for confirmation.
+            # Anything unalignable keeps the honest unknown answer.
+            from . import constructions as _CXD
+            try:
+                prop = _CXD.propose_alignment(work, session.mem)
+            except Exception:
+                prop = None
+            if prop is not None:
+                session.pending_cx = {"src": work, **prop}
+                turn["route"] = "propose"
+                turn["answer"] = {
+                    "text": f"我不太确定这句话，但其中提到了“{prop['entity']}”"
+                            f"和“{prop['value']}”（已有知识中有此关联）。"
+                            f"你是想说“{prop['entity']}可以{prop['value']}”吗？"
+                            "输入“确认”记录这条理解，“取消”放弃；"
+                            "确认前不写入任何内容。",
+                    "certainty": "unknown", "citations": []}
+            else:
+                turn["route"] = "unknown"
+                turn["answer"] = {
+                    "text": "这句话我暂时无法理解（只支持帮助中列出的命令与"
+                            "常见陈述/疑问句式）。请换一种表达，或用“观察 "
+                            "<名称> 属性=值”结构化输入。本次未写入任何内容。",
+                    "certainty": "unknown", "citations": []}
         _log(session, turn)
         return turn
     except Exception as e:  # noqa: BLE001 - dialogue never crashes
@@ -570,6 +599,60 @@ def process(session, text: str) -> dict:
         turn["answer"] = {"text": "处理出错，未写入任何内容。",
                           "certainty": "unknown", "citations": []}
         return turn
+
+
+def _cx_followup(session, text: str) -> dict | None:
+    """Confirm / cancel an auto-discovery proposal (Phase 6H-2C).
+
+    确认: writes the observation through the existing hypothesis gates,
+    records a TRUSTED pair (user-confirmed + KB-aligned, never a guess),
+    then runs the automatic cluster/induce/validate step and reports
+    what happened (candidate induced? validated? still collecting?).
+    Activation always stays an explicit 构式激活 step.
+    取消: drops the proposal with an audit record.
+    Anything else: None (proposal abandoned, input flows through).
+    """
+    prop = session.pending_cx or {}
+    s = text.strip()
+    if s in ("确认", "确认保存", "好的", "保存", "是的", "对"):
+        session.pending_cx = None
+        ent, val = prop.get("entity", ""), prop.get("value", "")
+        res = session.learner.learn_from_observation(
+            {"name": ent, "attributes": {"function": val},
+             "source": "chat-cx-confirm"})
+        from . import constructions as _CXF
+        _CXF.record_pair(session.mem, prop.get("src", ""), ent, val,
+                         prop.get("basis", ""))
+        try:
+            rep = _CXF.auto_learn_step(session.mem)
+        except Exception as e:  # noqa: BLE001 - report, never crash
+            rep = {"clusters": 0, "induced": [], "validated": [],
+                   "error": str(e)}
+        lines = [f"已记录理解：{ent}可以{val}（用户确认，状态hypothesis）。"]
+        if rep.get("induced"):
+            lines.append("根据多条确认经验归纳出候选构式："
+                         + "、".join(rep["induced"]) + "（未验证未激活）。")
+        else:
+            lines.append("确认经验已积累；还缺更多不同主体的例子才能归纳。")
+        if rep.get("validated"):
+            lines.append("以下候选已通过留存验证（仍待显式激活）："
+                         + "、".join(rep["validated"]) + "。")
+        lines.append("注意：这只是候选规律，不是已验证知识；"
+                     "用“构式激活 <id>”显式激活后才参与理解。")
+        return {"text": "\n".join(lines), "certainty": "unknown",
+                "citations": []}
+    if s in ("取消", "算了", "不对", "不是", "不要", "放弃"):
+        session.pending_cx = None
+        try:
+            session.mem.add_experience(
+                "evaluation", "auto-discovery proposal cancelled",
+                {"op": "cx_cancel", "src": prop.get("src", "")})
+        except Exception:
+            pass
+        return {"text": "已放弃这条理解，未写入任何知识。",
+                "certainty": "unknown", "citations": []}
+    session.pending_cx = None
+    return None
 
 
 def _propose_define(session, text: str) -> dict:

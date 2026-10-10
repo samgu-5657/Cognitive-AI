@@ -268,3 +268,201 @@ def activate_rule(mem, rule_id: str) -> dict:
     mem.add_experience("evaluation", f"construction {rule_id} activated",
                        {"op": "construction_activate", "rule_id": rule_id})
     return {"ok": True, "rule_id": rule_id}
+
+
+def propose_alignment(text: str, mem) -> dict | None:
+    """Align an unknown utterance with known knowledge (Phase 6H-2C).
+
+    Returns {"entity", "value", "basis"} or None. Generic rule, no
+    per-sentence logic: exactly ONE known concept mentioned AND exactly
+    ONE of that concept's known function values mentioned (raw words).
+    Pronouns, zero matches and several matches all abstain (None) --
+    ambiguity must become clarification, never a guess.
+    """
+    from .semantics import PRONOUNS
+    s = text.strip()
+    if not s or any(p == s for p in PRONOUNS):
+        return None
+    ents = []
+    try:
+        for c in mem.list_concepts():
+            for name in (c.get("id", ""), c.get("name", "")):
+                if name and name in s and len(name) >= 2:
+                    ents.append(c["id"])
+                    break
+    except Exception:
+        return None
+    ents = list(dict.fromkeys(ents))
+    if len(ents) != 1:
+        return None
+    vals = []
+    try:
+        from .ontology import Ontology
+        inh = Ontology(mem).inherited_attributes(ents[0])
+    except Exception:
+        inh = {}
+    for key, row in (inh or {}).items():
+        # any known attribute value of this entity anchors alignment
+        # (keys stay raw here: 观察 stores user words uncanonicalized;
+        # canonicalization happens at confirm time, not at guess time).
+        v = row.get("value")
+        if isinstance(v, str) and len(v) >= 2 and v in s:
+            vals.append(v)
+    try:
+        lex = {r["word"]: r["key"] for r in mem.list_mappings()}
+    except Exception:
+        lex = {}
+    for word, key in lex.items():
+        if key == "function" and len(word) >= 2 and word in s and \
+                word not in vals:
+            vals.append(word)
+    vals = list(dict.fromkeys(vals))
+    if len(vals) != 1:
+        return None
+    return {"entity": ents[0], "value": vals[0],
+            "basis": f"known concept + known value co-occur in input"}
+
+
+def record_pair(mem, src: str, entity: str, value: str,
+                basis: str) -> int:
+    """Store one trusted utterance pair as an experience (no new table).
+
+    Trusted = user-confirmed proposal or verified-QA evidence, never a
+    guess. Candidates are induced from these by auto_learn_step.
+    """
+    return mem.add_experience(
+        "observation", f"trusted utterance pair: {src!r}",
+        {"op": "cx_pair", "src": src, "entity": entity, "value": value,
+         "basis": basis})
+
+
+def list_pairs(mem) -> list[dict]:
+    """All trusted pairs, oldest first."""
+    out = []
+    try:
+        rows = mem.query("SELECT * FROM experiences ORDER BY id")
+    except Exception:
+        return out
+    import json as _json
+    for r in rows:
+        try:
+            d = r.get("detail")
+            d = _json.loads(d) if isinstance(d, str) else (d or {})
+        except Exception:
+            continue
+        if isinstance(d, dict) and d.get("op") == "cx_pair" and \
+                d.get("src") and d.get("entity") and d.get("value"):
+            out.append({"id": r["id"], "src": d["src"],
+                        "entity": d["entity"], "value": d["value"],
+                        "basis": d.get("basis", "")})
+    return out
+
+
+def auto_learn_step(mem) -> dict:
+    """Cluster trusted pairs, induce candidates, validateREADY ones.
+
+    Greedy clustering by shared affix structure with role checks; each
+    cluster with >=2 distinct entities induces at most one candidate
+    (saved, never activated here). Candidates whose later pairs (fresh
+    entities, not used as train) fully pass are promoted to validated.
+    Activation stays an explicit human step. Returns a report dict.
+    """
+    pairs = list_pairs(mem)
+    trained = set()
+    for r in mem.list_constructions():
+        try:
+            for e in r.get("evidence", []) or []:
+                for d in (e or {}).get("support", []) or []:
+                    if isinstance(d, dict) and d.get("src"):
+                        trained.add(d["src"])
+        except Exception:
+            pass
+    clusters: list[list[dict]] = []
+    for p in pairs:
+        placed = False
+        for cl in clusters:
+            trial = [q["src"] for q in cl] + [p["src"]]
+            aff = _split_affix(trial)
+            if aff is None:
+                continue
+            pre, mid, suf = aff
+            ok = True
+            for q in cl + [p]:
+                core = q["src"][len(pre):len(q["src"]) - len(suf)
+                                if suf else len(q["src"])]
+                if mid not in core:
+                    ok = False
+                    break
+                left, right = core.split(mid, 1)
+                if left != q["entity"] or right != q["value"]:
+                    ok = False
+                    break
+            if ok:
+                cl.append(p)
+                placed = True
+                break
+        if not placed:
+            clusters.append([p])
+    report = {"clusters": len(clusters), "induced": [], "validated": []}
+    known_affix = set()
+    for r in mem.list_constructions():
+        try:
+            known_affix.add((r.get("pre", ""), r.get("mid", ""),
+                             r.get("suf", "")))
+        except Exception:
+            pass
+    for cl in clusters:
+        if len({q["entity"] for q in cl}) < 2:
+            continue
+        if all(q["src"] in trained for q in cl):
+            continue
+        aff = _split_affix([q["src"] for q in cl])
+        if aff is not None and aff in known_affix:
+            continue  # same structure already tracked; later pairs
+            # only serve as held-out evidence below
+        rep = induce([{"src": q["src"], "entity": q["entity"],
+                       "value": q["value"]} for q in cl])
+        for c in rep["candidates"]:
+            rid = new_rule_id("auto")
+            mem.save_construction(
+                {"id": rid, "kind": c["kind"], "pre": c["pre"],
+                 "mid": c["mid"], "suf": c["suf"],
+                 "fixed_value": c.get("fixed_value", ""),
+                 "status": "candidate",
+                 "evidence": [{"source": "auto-dialogue",
+                               "support": c["support"],
+                               "pair_ids": [q["id"] for q in cl]}],
+                 "report": {"note": c["note"]}})
+            mem.add_experience(
+                "evaluation", f"auto construction candidate {rid}",
+                {"op": "cx_auto_induce", "rule_id": rid})
+            report["induced"].append(rid)
+    # validate-ready: candidates with later, fresh-entity evidence.
+    # pair_ids pin the exact training rows, so later pairs (greater id,
+    # unseen entities) serve as the held-out set.
+    for row in mem.list_constructions(status="candidate"):
+        try:
+            ev = row.get("evidence", [])
+            used = set()
+            for e in ev if isinstance(ev, list) else []:
+                used.update((e or {}).get("pair_ids", []) or [])
+        except Exception:
+            used = set()
+        if not used:
+            continue
+        train_ents = {q["entity"] for q in list_pairs(mem)
+                      if q["id"] in used}
+        held = [{"src": q["src"], "entity": q["entity"],
+                 "value": q["value"]} for q in list_pairs(mem)
+                if q["id"] not in used and
+                q["entity"] not in train_ents]
+        if not held:
+            continue
+        rep = validate_rule(row, held)
+        row["report"] = {**row.get("report", {}), **rep,
+                         "auto_validated": True}
+        if rep["passed"]:
+            row["status"] = "validated"
+            report["validated"].append(row["id"])
+        mem.save_construction(row)
+    return report
