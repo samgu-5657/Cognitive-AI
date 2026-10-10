@@ -54,6 +54,41 @@ def parse_for_filter(dst: str, lexicon: dict | None) -> dict:
     return frame_signature(_parse_rule_free(dst.strip(), lexicon).to_dict())
 
 
+def consider_learned_override(direct: dict, text: str, rules: list[dict],
+                              lexicon: dict | None = None) -> dict | None:
+    """Task-3 gate: may a learned rewrite replace a DIRECT parse?
+
+    Conditions (all required):
+    1. the direct frame admits doubt (non-empty ambiguities);
+    2. at least one rule is active AND validated-or-active... (active);
+    3. the rewrite parses rule-free with NO ambiguities;
+    4. the rewrite reproduces a frame the current parser understands.
+    Two reasonable readings -> None (caller keeps direct + its doubt
+    note, i.e. clarify/abstain downstream). Direct parses without doubt
+    are NEVER overridden -- prove it in tests, not prose.
+    Returns the rewritten frame dict (with override trace) or None.
+    """
+    from .semantics import parse_sentence as _parse
+    lexicon = lexicon or {}
+    if not direct.get("ambiguities"):
+        return None
+    tried = apply_rules(text.strip(), [r for r in rules
+                                       if r.get("status") == "active"],
+                        lexicon)
+    if not tried.get("rewritten"):
+        return None  # includes the disagree-abstain case
+    inner = _parse(tried["rewritten"], "phrase-override", lexicon, None)
+    if inner.intent == "unknown" or inner.ambiguities:
+        return None
+    d = inner.to_dict()
+    d["trace"] = list(d.get("trace", [])) + [
+        f"phrase_override:{tried['rule_id']} replaced doubtful direct "
+        f"parse (doubt was: {direct.get('ambiguities')})"]
+    d["confidence"] = round(max(0.0, float(d.get("confidence", 0)) - 0.1),
+                            3)
+    return d
+
+
 def frame_signature(frame: dict) -> dict:
     """Comparable meaning skeleton: intent + predicate types/keys.
 

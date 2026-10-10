@@ -61,7 +61,10 @@ def process(session, text: str) -> dict:
             _log(session, turn)
             return turn
         follow = _is_followup(stripped)
-        if follow and len(stripped) <= 8 and getattr(session, "last_answer", None) \
+        # Bare follow-ups only: threshold 6 chars keeps "为什么" (3) and
+        # "能举个例子吗" (6) while longer content questions containing
+        # follow-up words (e.g. 8-char 为什么杯子会漏水) stay fresh QA.
+        if follow and len(stripped) <= 6 and getattr(session, "last_answer", None) \
                 and not (getattr(session, "pending_teach", None) or
                          getattr(session, "pending_rule", None)):
             # bare follow-ups only ("为什么", "能举个例子吗"): longer
@@ -105,7 +108,7 @@ def process(session, text: str) -> dict:
         # shared with the executor). A math-detectable input must route to
         # QA so the existing engine runs; never reject it as unknown prose.
         from .cog_planners import _detect_math
-        from .semantics import parse_sentence
+        from .semantics import parse_sentence, resolve_question
         _ph = getattr(session, "_phrase_rules", None)
         frame = parse_sentence(stripped, source="user",
                                lexicon=session._lexicon(),
@@ -113,6 +116,21 @@ def process(session, text: str) -> dict:
         turn["stages"]["parse"] = frame.to_dict()
         if frame.intent in ("query", "classify", "attribute", "function") \
                 or _detect_math(stripped):
+            rq = resolve_question(frame.to_dict(), session._lexicon())
+            turn["stages"]["adjudication"] = rq
+            if rq.get("needs_clarify") and rq.get("kind") == "unknown_q":
+                # understood enough to know what is missing, not enough
+                # to answer: ask, don't guess. Zero writes.
+                turn["route"] = "clarify"
+                turn["answer"] = {
+                    "text": "我不太确定你在问什么："
+                            + "; ".join(rq.get("defects", [])) + "。"
+                            "请带上属性词重问（如 材质/用途/颜色），或用"
+                            "“观察 <名称> 属性=值”结构化输入。"
+                            "本次未写入任何内容。",
+                    "certainty": "unknown", "citations": []}
+                _log(session, turn)
+                return turn
             turn["route"] = "qa"
             turn["answer"] = _answer_qa(session, stripped, frame)
         elif frame.intent in ("observe", "correct", "negate", "hedge",

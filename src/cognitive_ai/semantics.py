@@ -38,6 +38,12 @@ QUERY_MARKS_ANY = ("什么", "为什么", "是否为", "是不是", "多少",
 # Chinese attribute words -> canonical KB keys (unknown words pass through
 # raw with an ambiguity flag; never silently dropped).
 # Leading quantifiers stripped from NP slots (一个/一种/...), deictics kept.
+# Leading politeness markers carry no meaning (请问X... asks about X):
+# stripped for slot matching ONLY, always logged in the frame trace.
+POLITENESS_LEAD = ("麻烦问一下", "请问一下", "请教一下", "打扰一下",
+                   "请问")
+QUESTION_WORDS = ("什么", "谁", "哪个", "哪些", "多少", "几", "是否",
+                  "是否为", "是不是", "能否", "能不能", "有没有", "吗")
 QUANTIFIERS = ("一种", "一类", "一个", "一只", "一位", "一些", "许多",
                "很多", "一辆", "一台", "一架", "一部", "一艘", "一匹",
                "一张", "一件", "一条", "一棵", "一朵", "一本", "一支",
@@ -101,6 +107,15 @@ def _clean_np(np: str) -> str:
     return np
 
 
+def _strip_qmark(np: str) -> str:
+    """Drop ONE trailing interrogative particle from a slot value.
+
+    吗/呢 mark the sentence as a question (already recorded); leaving
+    them inside feature/action slots (把手吗) would poison lexicon
+    lookups and KB keys. Trailing-only, logged by callers via trace."""
+    return re.sub(r"(吗|呢)$", "", np.strip())
+
+
 def parse_sentence(sentence: str, source: str = "user",
                    lexicon: dict | None = None,
                    phrase_rules: list[dict] | None = None) -> SemanticFrame:
@@ -126,6 +141,20 @@ def parse_sentence(sentence: str, source: str = "user",
         from .phraselearn import apply_rules
         direct = parse_sentence(s, source, lexicon, None)
         if direct.intent != "unknown":
+            # Task-3 gate: a doubtful direct parse (parser recorded its
+            # own ambiguities) may defer to a clean learned rewrite;
+            # confident parses are never overridden.
+            if direct.ambiguities:
+                from .phraselearn import consider_learned_override
+                alt = consider_learned_override(
+                    direct.to_dict(), s, phrase_rules, lexicon or {})
+                if alt is not None:
+                    fr2 = SemanticFrame(raw=raw, source=source)
+                    for k, v in alt.items():
+                        if hasattr(fr2, k):
+                            setattr(fr2, k, v)
+                    fr2.raw = raw
+                    return fr2
             return direct
         tried = apply_rules(s, phrase_rules, lexicon or {})
         if tried.get("rewritten"):
@@ -147,7 +176,7 @@ def parse_sentence(sentence: str, source: str = "user",
             fr.trace.append("phrase_rule ambiguity -> no rewrite")
     # 1. interrogative? 吗/呢 only sentence-finally (的话呢哈哈 is not a
     # question); content question words count anywhere. Recorded FIRST but
-    # applied LAST: slots still parse (杯子的材质是什么 keeps entities),
+    # applied LAST: slots still parse (X的材质是什么 keeps entities),
     # the question form only shapes the final intent.
     interrogative = s.endswith(QUERY_MARKS_END) or \
         _has_any(s, QUERY_MARKS_ANY)
@@ -214,14 +243,21 @@ def parse_sentence(sentence: str, source: str = "user",
     instance = _has_any(s, INSTANCE_MARKS)
     fr.scope = "generic" if generic else ("instance" if instance else "unknown")
     # 5. compositional slot patterns (generic, longest first).
-    # Hedge words are lifted out for slot matching ONLY (modality already
-    # recorded above): 可能是陶土做的 -> 是陶土做的. Scope adverbs too:
-    # 紫砂壶通常是… -> 紫砂壶是…. Never for meaning. Careful: 都是 carries
-    # the copula, so it becomes 是 instead of vanishing.
+    # Hedge/scope words are lifted out for slot matching ONLY (modality
+    # already recorded above): 可能是陶土做的 -> 是陶土做的; 都是 carries
+    # the copula so it becomes 是 instead of vanishing.
+    # Leading politeness markers likewise (请问+X的材质是什么 asks
+    # about X的材质是什么): raw text stays in fr.raw, strip is logged.
+    # Never for meaning -- bare 请问 with nothing after stays unknown.
     slots = s.replace("都是", "是")
     for h in sorted(list(HEDGES) + [g for g in GENERIC_MARKS if g != "都是"],
                     key=len, reverse=True):
         slots = slots.replace(h, "")
+    for p in sorted(POLITENESS_LEAD, key=len, reverse=True):
+        if slots.startswith(p):
+            slots = slots[len(p):]
+            fr.trace.append(f"politeness stripped: {p}")
+            break
     pats = [
         # ---- question templates (generic NP slots, interrogative first)
         # X有什么用途/功能/用处 -> query function
@@ -242,6 +278,27 @@ def parse_sentence(sentence: str, source: str = "user",
         (re.compile(r"^为什么人们会使用(?P<a>.+?)$"), "query_function_use"),
         # 为什么X会V -> query reason
         (re.compile(r"^为什么(?P<a>.+?)会(?P<b>.+?)$"), "query_reason"),
+        # ---- A-not-A verification questions (yes/no about KB facts).
+        # Generic slots, NOT per-sentence hardcodes. Placed BEFORE every
+        # negate pattern: 是不是 contains 不是 as a substring, and 不+是
+        # fires the negation scanner, but A-not-A asks -- it never denies.
+        # X是不是Y做的 -> verify material=Y about X
+        (re.compile(r"^(?P<a>.+?)是不是(?P<b>.+?)"
+                     r"(做|制成|构成|组成|所制)的?(吗)?$"),
+         "verify_attr"),
+        # X是Y色吗 / X是Y的吗 (short Y) -> verify attribute about X.
+        # Same generic key rule as attr_copula (color/material/learned
+        # mapping); unclear keys stay unverifiable, never guessed.
+        (re.compile(r"^(?P<a>.+?)是(?P<b>.+?)(色|的)吗$"),
+         "verify_attr_cop"),
+        # X是不是Y -> verify class=Y about X
+        (re.compile(r"^(?P<a>.+?)是不是(?P<b>.+?)(吗)?$"),
+         "verify_class"),
+        # X有没有Y -> verify possession of Y
+        (re.compile(r"^(?P<a>.+?)有没有(?P<b>.+?)(吗)?$"), "verify_has"),
+        # X能不能V -> verify capability V
+        (re.compile(r"^(?P<a>.+?)能不能(?P<b>.+?)(吗)?$"),
+         "verify_capable"),
         # X不是Y做的 / X不是金属的 / X并非Y所制 -> negate attribute
         (re.compile(r"^(?P<a>.+?)(?:不是|并非)(?P<b>.+?)"
                     r"(做|制成|构成|所制)的?$"),
@@ -313,7 +370,7 @@ def parse_sentence(sentence: str, source: str = "user",
         else:
             fr.trace.append("no pattern matched")
     # interrogative applied LAST: a parsed statement-question keeps its
-    # slots and becomes a query intent (杯子的材质是什么 asks, not asserts)
+    # slots and becomes a query intent (X的材质是什么 asks, not asserts)
     if interrogative and fr.intent in ("classify", "attribute", "function"):
         fr.intent = "query"
         fr.trace.append("interrogative: statement intent -> query")
@@ -386,6 +443,57 @@ def _fill(fr: SemanticFrame, kind: str, m, neg, hedge,
         fr.predicates.append({"type": "query_function", "subj": a})
         fr.intent, fr.modality = "query", "unknown"
         fr.confidence = 0.8
+    elif kind == "verify_attr":
+        key = _canon_attr("材质", lexicon)
+        fr.entities.append(_ent(a, "subject"))
+        fr.predicates.append({"type": "verify_attr", "subj": a, "key": key,
+                              "expected": b})
+        fr.intent, fr.modality = "query", "unknown"
+        fr.confidence = 0.8
+        fr.trace.append("A-not-A question: asks, never denies")
+    elif kind == "verify_attr_cop":
+        if b.endswith("色"):
+            key = "color"
+        elif len(b) <= 4:
+            key = "material"
+        elif lexicon and b in lexicon:
+            key = lexicon[b]
+        else:
+            key = None
+        fr.entities.append(_ent(a, "subject"))
+        fr.predicates.append({"type": "verify_attr", "subj": a, "key": key,
+                              "expected": b})
+        fr.intent, fr.modality = "query", "unknown"
+        fr.confidence = 0.8
+        if key is None:
+            fr.ambiguities.append(f"attribute key for '{b}' unclear; "
+                                  "cannot verify")
+        fr.trace.append("A-not-A question: asks, never denies")
+    elif kind == "verify_class":
+        fr.entities.append(_ent(a, "subject"))
+        fr.entities.append(_ent(_clean_np(b), "object"))
+        fr.predicates.append({"type": "verify_class", "subj": a,
+                              "expected": _clean_np(b)})
+        fr.intent, fr.modality = "query", "unknown"
+        fr.confidence = 0.8
+        fr.trace.append("A-not-A question: asks, never denies")
+    elif kind == "verify_has":
+        feat = _strip_qmark(_clean_np(b))
+        if lexicon and feat in lexicon:
+            feat = lexicon[feat]
+        fr.entities.append(_ent(a, "subject"))
+        fr.predicates.append({"type": "verify_has", "subj": a,
+                              "feature": feat})
+        fr.intent, fr.modality = "query", "unknown"
+        fr.confidence = 0.8
+        fr.trace.append("A-not-A question: asks, never denies")
+    elif kind == "verify_capable":
+        fr.entities.append(_ent(a, "subject"))
+        fr.predicates.append({"type": "verify_capable", "subj": a,
+                              "action": _strip_qmark(b)})
+        fr.intent, fr.modality = "query", "unknown"
+        fr.confidence = 0.8
+        fr.trace.append("A-not-A question: asks, never denies")
     elif kind == "query_reason":
         fr.entities.append(_ent(a, "subject"))
         fr.predicates.append({"type": "query_reason", "subj": a,
@@ -399,10 +507,12 @@ def _fill(fr: SemanticFrame, kind: str, m, neg, hedge,
         fr.intent, fr.modality, fr.confidence = "negate", "negate", 0.85
     elif kind in ("negate_has",):
         fr.predicates.append({"type": "has", "subj": a,
-                              "feature": _clean_np(b), "denied": True})
+                              "feature": _strip_qmark(_clean_np(b)),
+                              "denied": True})
         fr.intent, fr.modality, fr.confidence = "negate", "negate", 0.8
     elif kind == "negate_capable":
-        fr.predicates.append({"type": "capable", "subj": a, "action": b,
+        fr.predicates.append({"type": "capable", "subj": a,
+                              "action": _strip_qmark(b),
                               "denied": True})
         fr.intent, fr.modality, fr.confidence = "negate", "negate", 0.8
     elif kind == "attr_copula":
@@ -433,7 +543,7 @@ def _fill(fr: SemanticFrame, kind: str, m, neg, hedge,
             if amb:
                 fr.ambiguities.append(amb)
     elif kind == "has":
-        feat = _clean_np(b)
+        feat = _strip_qmark(_clean_np(b))
         if lexicon and feat in lexicon:
             feat = lexicon[feat]
         fr.predicates.append({"type": "has", "subj": a, "feature": feat})
@@ -448,7 +558,8 @@ def _fill(fr: SemanticFrame, kind: str, m, neg, hedge,
             fr.intent, fr.modality = "attribute", "assert"
             fr.confidence = 0.8
     elif kind == "capable":
-        fr.predicates.append({"type": "capable", "subj": a, "action": b})
+        fr.predicates.append({"type": "capable", "subj": a,
+                              "action": _strip_qmark(b)})
         if modality == "negate":
             fr.intent, fr.modality = "negate", "negate"
             fr.predicates[-1]["denied"] = True
@@ -521,6 +632,92 @@ def update_context(state: dict, frame: SemanticFrame) -> dict:
             "predicates": frame.predicates, "turn": st["turn"],
             "raw": frame.raw}
     return st
+
+
+def _has_question_word(text: str) -> bool:
+    return any(w in (text or "") for w in QUESTION_WORDS)
+
+
+def resolve_question(frame: dict, lexicon: dict | None = None) -> dict:
+    """Adjudicate what a parsed frame is asking (Phase 6D, Task 1).
+
+    Pure function over an already-parsed frame: separates "parsed" from
+    "understood". Returns {kind, key, expected, verify, subjects,
+    defects, needs_clarify, evidence}. kind in {function_q, attr_q,
+    has_q, verify_attr, verify_class, verify_has, verify_capable,
+    classify_q, unsupported_q, unknown_q}.
+
+    Confidence is deliberately NOT a calibrated probability: the parser
+    emits ordinal grades (fixed per-pattern constants). Callers must
+    treat them as grades, never as P(correct).
+    """
+    lexicon = lexicon or {}
+    preds = frame.get("predicates", []) or []
+    subjects = [e.get("text", "") for e in frame.get("entities", []) or []]
+    intent = frame.get("intent", "unknown")
+    out = {"kind": "unknown_q", "key": None, "expected": None, "verify": [],
+           "subjects": subjects, "defects": [], "needs_clarify": False,
+           "evidence": list(frame.get("trace", []) or [])}
+    if intent == "unknown":
+        out["defects"].append("unparseable: no pattern matched")
+        return out
+    if intent in ("negate", "hedge", "correct", "causal", "observe",
+                  "classify", "attribute", "function"):
+        # assertions / teachings / corrections are not questions
+        out["kind"] = "unsupported_q"
+        out["defects"].append(f"not a question (intent={intent})")
+        return out
+    # intent == "query" from here on
+    for p in preds:
+        t = p.get("type")
+        if t == "query_function":
+            out.update(kind="function_q", key="function")
+            return out
+        if t == "query_attr" and p.get("key"):
+            out.update(kind="attr_q", key=p["key"])
+            return out
+        if t == "attr" and not p.get("denied") and p.get("key") and \
+                _has_question_word(str(p.get("value", ""))):
+            # X由什么制成 / X是什么颜色的: the interrogative sits in the
+            # value slot; the KEY is the question (was: ignored, and the
+            # executor guessed an unrelated default attribute).
+            out.update(kind="attr_q", key=p["key"])
+            out["evidence"].append(f"attr-key {p['key']} from predicate")
+            return out
+        if t == "has" and not p.get("denied"):
+            feat = p.get("feature", "")
+            key = lexicon.get(feat, feat) if feat else None
+            if key:
+                out.update(kind="has_q", key=key)
+                out["evidence"].append(f"feature {feat!r} -> key {key!r}")
+                return out
+            out["defects"].append("has-question without feature")
+        if t == "query_reason":
+            # 为什么X会V: no causal model exists; the planner marks it
+            # ask_about=reason and the executor refuses honestly. It is a
+            # recognized question, never a clarification case.
+            out.update(kind="reason_q")
+            return out
+        if t in ("verify_attr", "verify_class", "verify_has",
+                 "verify_capable"):
+            out.update(kind=t, key=p.get("key"),
+                       expected=p.get("expected", p.get("feature",
+                                                        p.get("action"))),
+                       verify=[p])
+            return out
+        if t == "is_a" and not p.get("denied") and \
+                _has_question_word(str(p.get("obj", ""))):
+            # X的材质是什么: possessive entity carries the key; the
+            # executor resolves it. Bare 杯子是什么 cannot name a key.
+            out.update(kind="classify_q", key=None)
+            return out
+    out["defects"].append("query frame with no recognizable question role")
+    if subjects:
+        out["needs_clarify"] = True
+        out["defects"].append("cannot determine question type: ask with "
+                              "an attribute word (材质/用途/…) or a "
+                              "supported pattern")
+    return out
 
 
 def resolve_frame(frame: SemanticFrame, state: dict) -> SemanticFrame:

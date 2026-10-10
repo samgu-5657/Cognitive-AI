@@ -70,6 +70,7 @@ def _explain_conceptual(trace, style) -> dict:
         return {"text": "没有查到相关知识,无法回答。",
                 "certainty": "unknown", "citations": []}
     lines, cites, certain = [], [], True
+    vlines = []
     for s in attrs:
         o = s["outputs"]
         inp = s.get("inputs", {}) or {}
@@ -77,6 +78,34 @@ def _explain_conceptual(trace, style) -> dict:
         key = inp.get("key", "?")
         st, val = o.get("status"), o.get("value")
         cites.append(_cite(s))
+        if "expected" in inp:
+            # A-not-A verification (Phase 6D): report match, not value.
+            # Verification conclusions lead the short answer (they are the
+            # question asked); supporting reads follow in steps style.
+            exp, match = inp.get("expected"), o.get("match")
+            if key == "is_a":
+                if st == "verified" and match:
+                    vlines.append(f"是的,{subj}属于{exp}。(已验证)")
+                elif st == "verified":
+                    vlines.append(f"不,{subj}不属于{exp}。(已验证)")
+                else:
+                    vlines.append(f"{subj}是否属于{exp}未知。")
+                    certain = False
+                lines.append(vlines[-1])
+                continue
+            if st == "verified" and match:
+                vlines.append(f"是的,{subj}的{key}是{exp}。(已验证)")
+            elif st == "verified":
+                vlines.append(f"不是,{subj}的{key}是{val},不是{exp}。(已验证)")
+            elif st == "unverified":
+                vlines.append(f"{subj}的{key}可能是{val},"
+                              f"是否为{exp}尚无验证。(暂定假设,未验证)")
+                certain = False
+            else:
+                vlines.append(f"{subj}的{key}未知,无法验证是否为{exp}。")
+                certain = False
+            lines.append(vlines[-1])
+            continue
         if st == "verified":
             lines.append(f"{subj}的{key}是{val}。(已验证)")
         elif isinstance(st, str) and st.startswith("inherited"):
@@ -90,7 +119,7 @@ def _explain_conceptual(trace, style) -> dict:
             lines.append(f"{subj}的{key}未知。")
             certain = False
     if style == "short" and lines:
-        text = lines[0]
+        text = vlines[0] if vlines else lines[0]
     else:
         text = "\n".join(["结论:"] + [f"  {l}" for l in lines])
     for s in learned:
@@ -105,7 +134,7 @@ def _explain_conceptual(trace, style) -> dict:
             lines.append(f"已验证规则{f.get('rule')}给出:{f.get('conclusion')}")
             cites.append(_cite(s))
     if style == "short" and lines:
-        text = lines[0]
+        text = vlines[0] if vlines else lines[0]
     elif lines:
         text = "\n".join(["结论:"] + [f"  {l}" for l in lines])
     else:

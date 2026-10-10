@@ -213,6 +213,12 @@ def _run_plan(task, plan, ctx, trace) -> bool:
                 inputs.get("concept") == "__each__":
             if not _run_attr_queries(task, ctx, trace):
                 return False
+            # A-not-A verification claims (Phase 6D): compare the
+            # retrieved value against the asked one. Runs once, right
+            # after the attribute reads it depends on.
+            if (task.goal or {}).get("verify"):
+                if not _run_verify(task, ctx, trace):
+                    return False
             continue
         if step["op"] == "apply_learned" and inputs.get("from_attrs"):
             # feed retrieved attribute values as rule input slots
@@ -352,6 +358,122 @@ def _run_attr_queries(task, ctx, trace) -> bool:
             if rec["status"] != "failed":
                 ok_any = True
     return ok_any
+
+
+# KB stores canonical (often English) values while users ask in Chinese.
+# Verification compares through this small alias map ONLY (never for
+# writing): seed-value translations with no KB counterpart stay
+# mismatches (honest 否), never invented matches.
+_VERIFY_ALIASES = {"陶瓷": "ceramic", "玻璃": "glass", "饮用": "drinking",
+                   "喝水": "drinking"}
+
+
+def _norm_value(v):
+    if isinstance(v, bool):
+        return v
+    s = str(v).strip().lower()
+    return _VERIFY_ALIASES.get(s, s)
+
+
+def _run_verify(task, ctx, trace) -> bool:
+    """A-not-A checks against the KB (Phase 6D).
+
+    Each verify predicate compares a retrieved attribute with the asked
+    value. A verified mismatch is still a VERIFIED answer (no). Anything
+    unproven (hypothesis/inherited-hypothesis) stays unverified;
+    contested or missing knowledge fails honestly into the gap flow.
+    Every comparison is recorded with inputs.expected + outputs.match.
+    """
+    from .operations import QueryAttribute
+    try:
+        lex = {r["word"]: r["key"] for r in
+               ctx["memory"].list_mappings()}
+    except Exception:
+        lex = {}
+    ok_any = False
+    ent_ids = [cid for _e, (cid, _k) in
+               zip(task.goal.get("entities", []),
+                   _resolve_entities(task, ctx))]
+    for v in (task.goal or {}).get("verify", []):
+        t = v.get("type")
+        subj = v.get("subj", "")
+        cid = None
+        for ent, c in zip(task.goal.get("entities", []), ent_ids):
+            if ent == subj or subj in ent or ent in subj:
+                cid = c
+                break
+        cid = cid or (ent_ids[0] if ent_ids else None)
+        if t == "verify_class":
+            rec = _verify_class_membership(v, cid, ctx)
+            trace["steps"].append(rec)
+            ok_any = ok_any or rec["status"] == "verified"
+            continue
+        if t == "verify_attr":
+            key, expected = v.get("key"), v.get("expected")
+        elif t == "verify_has":
+            key, expected = lex.get(v.get("feature", ""),
+                                    v.get("feature")), True
+        elif t == "verify_capable":
+            key, expected = "function", v.get("action")
+        else:
+            continue
+        if not cid or not key:
+            trace["steps"].append(
+                {"op": "query_attribute", "status": "failed",
+                 "note": f"cannot verify {t}: unresolved",
+                 "inputs": {"concept": subj, "expected": expected}})
+            return False
+        qrec = QueryAttribute().run({"concept": cid, "key": key}, ctx)
+        qrec["inputs"] = {"concept": cid, "key": key,
+                          "expected": expected}
+        # Knowledge status lives in outputs.status (verified |
+        # hypothesis | inherited(..) | unknown); rec.status is only the
+        # op-level run outcome. Confusing the two would promote
+        # hypotheses into verified answers -- read outputs here.
+        st = (qrec.get("outputs") or {}).get("status", "")
+        val = (qrec.get("outputs") or {}).get("value")
+        if st in ("failed", "unknown") or "contested" in str(st):
+            qrec["status"] = "failed"
+            qrec["note"] = f"no decidable knowledge for {key}"
+            trace["steps"].append(qrec)
+            return False
+        match = bool(val) if expected is True else \
+            (_norm_value(val) == _norm_value(expected))
+        qrec["outputs"] = {**(qrec.get("outputs") or {}), "match": match}
+        if st == "verified" or st == "inherited(verified)":
+            qrec["status"] = "verified"
+            ok_any = True
+        else:
+            qrec["status"] = "unverified"
+        trace["steps"].append(qrec)
+    return ok_any
+
+
+def _verify_class_membership(v: dict, cid: str | None, ctx) -> dict:
+    """Is the expected class an ancestor-or-self of the concept?"""
+    mem = ctx["memory"]
+    onto = ctx.get("ontology")
+    exp = v.get("expected", "")
+    base = {"op": "query_attribute",
+            "inputs": {"concept": cid, "key": "is_a", "expected": exp}}
+    if not cid:
+        return {**base, "status": "failed",
+                "note": f"unknown concept {v.get('subj')}",
+                "outputs": {"match": False}}
+    target = mem.get_concept(exp) or next(
+        iter(mem.find_concepts_by_name(exp)), None)
+    if not target:
+        return {**base, "status": "failed",
+                "note": f"unknown class {exp}",
+                "outputs": {"match": False}}
+    try:
+        chain = onto.ancestors(cid) if onto else []
+    except Exception:
+        chain = []
+    match = target["id"] in (chain or []) or target["id"] == cid
+    return {**base, "status": "verified",
+            "outputs": {"match": match, "value": target["id"],
+                        "basis": [f"{cid} ancestry checked"]}}
 
 
 def _wanted_key(text: str):

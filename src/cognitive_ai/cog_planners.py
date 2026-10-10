@@ -17,7 +17,7 @@ def plan_for_frame(task, frame: dict, memory) -> None:
         _plan_logic(task, frame)
         return
     if _detect_conceptual(frame, text):
-        _plan_conceptual(task, frame)
+        _plan_conceptual(task, frame, memory)
         return
     task.task_type = "unknown"
 
@@ -120,16 +120,29 @@ def _detect_conceptual(frame: dict, text: str) -> bool:
                                    "是否", "吗", "呢"))
 
 
-def _plan_conceptual(task, frame) -> None:
+def _plan_conceptual(task, frame, memory=None) -> None:
     task.task_type = "conceptual"
     ents = [e["text"] for e in frame.get("entities", [])]
-    ask_key = None
+    from .semantics import resolve_question
+    try:
+        lex = {r["word"]: r["key"] for r in memory.list_mappings()} \
+            if memory is not None else {}
+    except Exception:
+        lex = {}
+    try:
+        q = resolve_question(frame, lex)
+    except Exception:
+        q = {"kind": "unknown_q", "key": None, "verify": []}
+    ask_key = q.get("key")
     ask_about = None
+    for p in frame.get("predicates", []):
+        if p.get("type") == "query_reason":
+            ask_about = "reason"
+    # legacy predicate scan kept as a second source: explicit
+    # query_function/query_attr predicates name the key directly
     for p in frame.get("predicates", []):
         if p.get("type") == "query_function":
             ask_key = "function"
-        elif p.get("type") == "query_reason":
-            ask_about = "reason"
         elif p.get("type") == "query_attr" and p.get("key"):
             ask_key = p["key"]
     task.goal = {"kind": "answer_about", "entities": ents,
@@ -138,6 +151,11 @@ def _plan_conceptual(task, frame) -> None:
         task.goal["ask_key"] = ask_key
     if ask_about:
         task.goal["ask_about"] = ask_about
+    if q.get("kind", "").startswith("verify"):
+        task.goal["verify"] = q.get("verify", [])
+    if q.get("needs_clarify"):
+        task.unresolved_items.append(
+            "question type unclear: " + "; ".join(q.get("defects", [])))
     task.known_facts = [{"fact": f"提及实体:{e}", "source": "parse"}
                         for e in ents]
     if not ents:
