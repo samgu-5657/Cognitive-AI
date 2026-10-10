@@ -89,6 +89,30 @@ def _answer_paraphrase(session, text: str) -> dict:
             "citations": []}
 
 
+def _answer_generate(session, text: str) -> dict:
+    """Generate (entity, value) surfaces (Phase 6H-2B).
+
+    Input is explicit roles ("生成 海狸 筑坝"), not a parsed
+    sentence: the learning lives in the TEMPLATE. Active
+    constructions render first (source learned:id); the fixed
+    canonical fallback (X可以V) always applies. Zero writes.
+    """
+    from . import constructions as _CX
+    parts = text.split()
+    if len(parts) != 2 or not all(parts):
+        return {"text": "用法: 生成 <实体> <功能>（如：生成 海狸 筑坝）。",
+                "certainty": "unknown", "citations": []}
+    ent, val = parts
+    _cx = getattr(session, '_constructions', None)
+    outs = _CX.render(ent, val, _cx() if _cx else [])
+    outs = list(outs) + [{"text": f"{ent}可以{val}", "source": "fixed"}]
+    lines = ['同一语义的不同说法：']
+    for o in outs:
+        lines.append(f"  {o['text']}（来源：{o['source']}）")
+    return {"text": "\n".join(lines), "certainty": "unknown",
+            "citations": []}
+
+
 def _frame_from_dict(d: dict):
     """Rebuild a SemanticFrame from a stored dict (resume path)."""
     from .semantics import SemanticFrame as _SF
@@ -254,6 +278,16 @@ def process(session, text: str) -> dict:
                 session, stripped[len(first):].strip())
             _log(session, turn)
             return turn
+        # generate (Phase 6H-2B): 生成 <实体> <功能> renders (entity,
+        # value) through the SAME active constructions the parser uses,
+        # plus the fixed canonical fallback. Read-only; unknown when no
+        # construction or fallback covers the roles.
+        if first == "生成":
+            turn["route"] = "generate"
+            turn["answer"] = _answer_generate(
+                session, stripped[len(first):].strip())
+            _log(session, turn)
+            return turn
         from .interact import ALIASES
         if first in ALIASES or first.lower() in (
                 "help", "quit", "concepts", "inspect", "predict", "observe",
@@ -373,6 +407,36 @@ def process(session, text: str) -> dict:
                 turn["stages"]["semlearn"] = True
                 # the constructed entity joins the session topic like any
                 # parsed one (pronouns later in the turn resolve to it)
+                try:
+                    state = update_context(state, frame)
+                    session.mem.set_context(session.session_id, state)
+                    turn["stages"]["context"] = {
+                        "entities": [e.get("text", "") for e in
+                                     state.get("entities", [])]}
+                except Exception:
+                    pass
+        # Phase 6H-2B constructions: only when everything older is
+        # unknown (fixed parser, phrase rewrites, semlearn frames).
+        # A unique match yields an observation-grade frame for the
+        # existing teach-confirm flow; ambiguity stays unknown.
+        if frame.intent == "unknown":
+            from . import constructions as _CX
+            _cx = getattr(session, "_constructions", None)
+            try:
+                cfr = _CX.parse_frame(
+                    work, _cx() if _cx else [], raw=work)
+            except Exception:
+                cfr = None
+            if cfr is not None:
+                from .semantics import SemanticFrame as _SF
+                frame = _SF(**{k: cfr[k]
+                               for k in ("intent", "entities", "predicates",
+                                         "modality", "scope", "source",
+                                         "confidence",
+                                         "unresolved_references",
+                                         "ambiguities", "raw", "trace")})
+                turn["stages"]["parse"] = frame.to_dict()
+                turn["stages"]["construction"] = True
                 try:
                     state = update_context(state, frame)
                     session.mem.set_context(session.session_id, state)

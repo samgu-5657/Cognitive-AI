@@ -53,6 +53,9 @@ ALIASES = {
     "语义示例": "sem", "语义归纳": "sem_induce",
     "语义验证": "sem_validate", "语义激活": "sem_activate",
     "语义列表": "sem_list",
+    "构式": "construct", "构式归纳": "construct_induce",
+    "构式验证": "construct_validate", "构式激活": "construct_activate",
+    "构式列表": "construct_list",
 }
 
 TEACH_STAGES = ("attrs", "function", "category", "done")
@@ -149,6 +152,17 @@ class Session:
         except Exception:
             return []
 
+    def _constructions(self) -> list[dict]:
+        """Active bidirectional constructions (Phase 6H-2B).
+
+        Parse and generate read the same rows; dialog tries parsing
+        only when the fixed parser (plus older learners) is unknown.
+        """
+        try:
+            return self.mem.list_constructions(status="active")
+        except Exception:
+            return []
+
     def handle(self, line: str) -> list[str]:
         line = (line or "").strip()
         parts = line.split()
@@ -188,6 +202,11 @@ class Session:
               "sem_validate": self._sem_validate,
               "sem_activate": self._sem_activate,
               "sem_list": self._sem_list,
+              "construct": self._construct,
+              "construct_induce": self._construct_induce,
+              "construct_validate": self._construct_validate,
+              "construct_activate": self._construct_activate,
+              "construct_list": self._construct_list,
               }.get(cmd)
         if fn is None:
             return self._fallback(line)
@@ -222,6 +241,9 @@ class Session:
             "  语义示例 <原句> => kind=<k>;entity=<e>;key=<k> [--留存]",
             "    直学语义帧(只收用途/材质/存在性三类查询,不改写句子)",
             "  语义归纳/验证/激活/列表  从标注示例归纳槽结构并验证后激活",
+            "  构式 <原句> => entity=<实体>;value=<功能> [--留存]",
+            "    教双向构式(解析与生成共用一条定义,需验证激活)",
+            "  构式归纳/验证/激活/列表  从示例归纳双槽构式并验证后激活",
             "  上下文/context  清空上下文/clear_context  会话指代记忆管理",
             "  队列/queue [pending]  审核/review <id> -- 训练样本审核",
             "  经历/历史/模型  experiences/history/model",
@@ -1061,7 +1083,8 @@ class Session:
 
     def _sem_induce(self, args) -> list[str]:
         from . import semlearn as SL
-        trains = self.mem.list_sem_examples(heldout=False)
+        trains = [r for r in self.mem.list_sem_examples(heldout=False)
+                  if r.get("kind") != "capability"]
         if not trains:
             return ["训练例不足。先用'语义示例'教学(至少2个不同对象)。"]
         rep = SL.induce(
@@ -1152,6 +1175,127 @@ class Session:
         for r in rows:
             out.append(f"  {r['id']} [{r['kind']}/{r['key']}/"
                        f"{r['status']}] {r['pre']!r} + ENTITY + "
+                       f"{r['suf']!r}")
+        return out
+
+    # ---- bidirectional construction flow (Phase 6H-2B): examples ->
+    # induce (candidate) -> held-out validate (parse + regenerate) ->
+    # explicit activate. Parse and generate read the SAME stored row.
+    @staticmethod
+    def _parse_cx_label(spec: str) -> dict | None:
+        # entity=<E>;value=<V> (no eval, fixed fields only)
+        out: dict = {}
+        for chunk in spec.split(";"):
+            chunk = chunk.strip()
+            if not chunk or "=" not in chunk:
+                return None
+            k, v = chunk.split("=", 1)
+            k, v = k.strip(), v.strip()
+            if k not in ("entity", "value") or not v or k in out:
+                return None
+            out[k] = v
+        return out if set(out) == {"entity", "value"} else None
+
+    def _construct(self, args) -> list[str]:
+        # 构式 <原句> => entity=<E>;value=<V> [--留存]
+        if "=>" not in " ".join(args):
+            return ["用法: 构式 <原句> => entity=<实体>;value=<功能> [--留存]"]
+        heldout = args[-1] == "--留存"
+        body = " ".join(args[:-1] if heldout else args)
+        src, spec = (p.strip() for p in body.split("=>", 1))
+        lab = self._parse_cx_label(spec)
+        if lab is None:
+            return ["[construct] 标注格式不对,须为 entity=<实体>;value=<功能>。"
+                    "示例未收录。"]
+        try:
+            eid = self.mem.add_construction_example(
+                src, lab["entity"], lab["value"], heldout,
+                evidence="chat-teach")
+        except ValueError as e:
+            return [f"[construct] 示例未收录: {e}。"]
+        self.mem.add_experience(
+            "evaluation", f"chat construction example #{eid}",
+            {"op": "cx_teach", "heldout": heldout})
+        kind = "验证例" if heldout else "训练例"
+        return [f"[construct] 已记{kind}#{eid}: {src!r} -> "
+                f"({lab['entity']}, {lab['value']})。",
+                "示例只存不改解析；用'构式归纳'归纳候选构式。"]
+
+    def _construct_induce(self, args) -> list[str]:
+        from . import constructions as CX
+        trains = [{"src": r["src"], "entity": r["entity"],
+                   "value": r["value"]}
+                  for r in self.mem.list_construction_examples(
+                      heldout=False)]
+        if not trains:
+            return ["训练例不足。先用'构式'教学(至少2个不同主体)。"]
+        rep = CX.induce(trains)
+        lines = [f"[construct] 归纳完成: {len(rep['candidates'])} 候选, "
+                 f"{len(rep['rejected'])} 组被拒(已说明原因,未建规则)。"]
+        for c in rep["candidates"]:
+            rid = CX.new_rule_id("chat")
+            self.mem.save_construction(
+                {"id": rid, "kind": c["kind"], "pre": c["pre"],
+                 "mid": c["mid"], "suf": c["suf"],
+                 "fixed_value": c.get("fixed_value", ""),
+                 "status": "candidate",
+                 "evidence": [{"source": "chat", "support": c["support"]}],
+                 "report": {"note": c["note"]}})
+            lines.append(f"  {rid} [{c['kind']}] {c['note']} "
+                         f"(状态candidate,未验证未激活)")
+        for r in rep["rejected"]:
+            lines.append(f"  拒: {r.get('reason')}")
+        self.mem.add_experience(
+            "evaluation", "chat construction induce",
+            {"op": "cx_induce", "candidates": len(rep["candidates"])})
+        lines.append("候选须经'构式验证 <id>'(独立验证例双向全过)再"
+                     "'构式激活 <id>'才能使用。")
+        return lines
+
+    def _construct_validate(self, args) -> list[str]:
+        if not args:
+            return ["用法: 构式验证 <规则id>"]
+        from . import constructions as CX
+        row = self.mem.get_construction(args[0])
+        if not row:
+            return ["查无此规则。先用'构式列表'查看。"]
+        held = [{"src": r["src"], "entity": r["entity"],
+                 "value": r["value"]}
+                for r in self.mem.list_construction_examples(heldout=True)]
+        if not held:
+            return [f"[construct] {args[0]} 无验证例,无法验证。",
+                    "用'构式 <句> => 标注 --留存'补充后再试。"]
+        rep = CX.validate_rule(row, held)
+        row["report"] = {**row.get("report", {}), **rep}
+        if rep["passed"]:
+            row["status"] = "validated"
+            self.mem.save_construction(row)
+            self.mem.add_experience(
+                "evaluation", f"construction validate {args[0]}: passed",
+                {"op": "cx_validate", "report": rep})
+            return [f"[construct] {args[0]} 验证通过({rep['checked']}个验证例"
+                    "解析+重生成全中)。状态validated；用'构式激活'显式激活。"]
+        self.mem.save_construction(row)
+        bad = [d for d in rep.get("detail", []) if not d["ok"]]
+        return [f"[construct] {args[0]} 验证未通过: {rep.get('reason')}。",
+                f"首个失败: {bad[0] if bad else rep}。规则停在candidate。"]
+
+    def _construct_activate(self, args) -> list[str]:
+        if not args:
+            return ["用法: 构式激活 <规则id>"]
+        from . import constructions as CX
+        out = CX.activate_rule(self.mem, args[0])
+        if out.get("ok"):
+            return [f"[construct] {args[0]} 已激活,解析与生成共用该定义。"]
+        return [f"[construct] 激活失败: {out.get('error')}"]
+
+    def _construct_list(self, args) -> list[str]:
+        rows = self.mem.list_constructions()
+        nex = len(self.mem.list_construction_examples())
+        out = [f"构式示例{nex}条；规则{len(rows)}条:"]
+        for r in rows:
+            out.append(f"  {r['id']} [{r['kind']}/{r['status']}] "
+                       f"{r['pre']!r} + ENTITY + {r['mid']!r} + VALUE + "
                        f"{r['suf']!r}")
         return out
 

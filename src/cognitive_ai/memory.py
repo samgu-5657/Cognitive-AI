@@ -223,6 +223,24 @@ CREATE TABLE IF NOT EXISTS sem_rules(
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+-- Phase 6H-2B: bidirectional constructions (additive). One construction
+-- binds TWO slots (entity + value) between fixed affixes for a single
+-- statement kind (this phase: capability only). Parse and generate read
+-- the SAME row: no separate hardcoded templates per direction.
+-- candidate/validated/active gating like the other learners.
+CREATE TABLE IF NOT EXISTS constructions(
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL DEFAULT '',
+  pre TEXT NOT NULL DEFAULT '',
+  mid TEXT NOT NULL DEFAULT '',
+  suf TEXT NOT NULL DEFAULT '',
+  fixed_value TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'candidate',
+  evidence TEXT NOT NULL DEFAULT '[]',
+  report TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 """
 
 # Additive per-column migrations for databases created before Phase 2.
@@ -789,6 +807,90 @@ class Memory:
             except Exception:
                 pass
         out["key"] = out.pop("attrkey", "")
+        return out
+
+    # ---- bidirectional constructions (Phase 6H-2B) ----
+    def add_construction_example(self, src: str, entity: str, value: str,
+                                 heldout: bool = False,
+                                 evidence: str = "") -> int:
+        # examples ride the sem_examples table with kind=capability and
+        # key empty; value travels in evidence payload (no schema churn).
+        src, entity, value = src.strip(), entity.strip(), value.strip()
+        if not src or not entity or not value:
+            raise ValueError("src, entity and value required")
+        cur = self.execute(
+            "INSERT INTO sem_examples(src,kind,entity,attrkey,heldout,"
+            "evidence,created_at) VALUES(?,?,?,?,?,?,?)",
+            (src, "capability", entity, "",
+             1 if heldout else 0,
+             json.dumps([evidence, {"value": value}], ensure_ascii=False),
+             _utcnow()))
+        return cur.lastrowid
+
+    def list_construction_examples(self, heldout=None) -> list[dict]:
+        rows = self.list_sem_examples(heldout=heldout)
+        out = []
+        for r in rows:
+            if r.get("kind") != "capability":
+                continue
+            val = ""
+            try:
+                ev = r.get("evidence", [])
+                if isinstance(ev, str):
+                    ev = json.loads(ev)
+                for e in ev or []:
+                    if isinstance(e, dict) and "value" in e:
+                        val = e["value"]
+            except Exception:
+                pass
+            out.append({"id": r["id"], "src": r["src"],
+                        "entity": r["entity"], "value": val,
+                        "heldout": r.get("heldout", 0)})
+        return out
+
+    def save_construction(self, rule: dict) -> None:
+        now = _utcnow()
+        self.execute(
+            "INSERT INTO constructions(id,kind,pre,mid,suf,fixed_value,"
+            "status,evidence,report,created_at,updated_at)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?)"
+            " ON CONFLICT(id) DO UPDATE SET kind=excluded.kind,"
+            " pre=excluded.pre, mid=excluded.mid, suf=excluded.suf,"
+            " fixed_value=excluded.fixed_value, status=excluded.status,"
+            " evidence=excluded.evidence, report=excluded.report,"
+            " updated_at=excluded.updated_at",
+            (rule["id"], rule.get("kind", "capability"),
+             rule.get("pre", ""), rule.get("mid", ""),
+             rule.get("suf", ""), rule.get("fixed_value", ""),
+             rule.get("status", "candidate"),
+             json.dumps(rule.get("evidence", []), ensure_ascii=False),
+             json.dumps(rule.get("report", {}), ensure_ascii=False), now,
+             now))
+
+    def get_construction(self, rid: str) -> dict | None:
+        row = self.query_one("SELECT * FROM constructions WHERE id=?",
+                             (rid,))
+        if not row:
+            return None
+        return self._decode_construction(row)
+
+    def list_constructions(self, status: str | None = None) -> list[dict]:
+        if status:
+            rows = self.query("SELECT * FROM constructions WHERE status=? "
+                              "ORDER BY id", (status,))
+        else:
+            rows = self.query("SELECT * FROM constructions ORDER BY id")
+        return [self._decode_construction(r) for r in rows]
+
+    @staticmethod
+    def _decode_construction(row: dict) -> dict:
+        out = dict(row)
+        for k in ("evidence", "report"):
+            try:
+                out[k] = json.loads(out[k]) if isinstance(out[k], str) \
+                    else out[k]
+            except Exception:
+                pass
         return out
 
     # ---- dialogue context (per session; never shared across sessions) ----
