@@ -130,10 +130,15 @@ def test_dialog_command_wired_in_session(tmp_path):
 
 
 def test_no_llm_dependency_in_dialog_stack():
+    import re as _re
     for mod in ("dialog", "answers"):
         src = open(os.path.abspath(os.path.join(
             os.path.dirname(__file__), "..", "src", "cognitive_ai",
             f"{mod}.py")), encoding="utf-8").read().lower()
-        for banned in ("openai", "anthropic", "transformers", "llm",
+        for banned in ("openai", "anthropic", "transformers",
                        "http://", "https://", "import torch", "from torch"):
             assert banned not in src, f"{mod}.py mentions {banned}"
+        # token match: substrings inside identifiers (e.g. fullmatch)
+        # must not trip the audit, real references still caught.
+        assert _re.search(r"(?<![a-z_])llm(?![a-z_])", src) is None, \
+            f"{mod}.py mentions llm"

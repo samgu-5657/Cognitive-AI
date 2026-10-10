@@ -353,10 +353,24 @@ def _run_attr_queries(task, ctx, trace) -> bool:
                  "note": f"unknown concept {ent}", "inputs": {"concept": ent}})
             return False
         for k in ([ekey or key] if (ekey or key) else ["function", "material"]):
-            rec = QueryAttribute().run({"concept": cid, "key": k}, ctx)
-            trace["steps"].append(rec)
-            if rec["status"] != "failed":
-                ok_any = True
+            keys = [k]
+            if k == "function":
+                # atomic capabilities (Phase 6G-1收尾): function#N rows
+                # are siblings of function, each independently sourced.
+                try:
+                    sibs = sorted({
+                        a.get("key") for a in
+                        ctx["memory"].get_attributes(cid)
+                        if re.fullmatch(r"function#\d+",
+                                        str(a.get("key", "")))})
+                except Exception:
+                    sibs = []
+                keys += [s for s in sibs if s not in keys]
+            for kk in keys:
+                rec = QueryAttribute().run({"concept": cid, "key": kk}, ctx)
+                trace["steps"].append(rec)
+                if rec["status"] != "failed":
+                    ok_any = True
     return ok_any
 
 

@@ -6,6 +6,8 @@ produce uncertainty or failure explanations, never conclusions.
 """
 from __future__ import annotations
 
+import re
+
 
 def explain(trace: dict, style: str = "short") -> dict:
     """Returns {text, certainty, citations, provenance}. certainty in
@@ -76,6 +78,9 @@ def _explain_conceptual(trace, style) -> dict:
         inp = s.get("inputs", {}) or {}
         subj = inp.get("concept", "?")
         key = inp.get("key", "?")
+        # display-only localization for atomic siblings (trace keeps raw):
+        # function#2 reads as 功能2. Values (with conditions) untouched.
+        disp = re.sub(r"^function#(\d+)$", r"功能\1", str(key))
         st, val = o.get("status"), o.get("value")
         cites.append(_cite(s))
         if "expected" in inp:
@@ -94,33 +99,37 @@ def _explain_conceptual(trace, style) -> dict:
                 lines.append(vlines[-1])
                 continue
             if st == "verified" and match:
-                vlines.append(f"是的,{subj}的{key}是{exp}。(已验证)")
+                vlines.append(f"是的,{subj}的{disp}是{exp}。(已验证)")
             elif st == "verified":
-                vlines.append(f"不是,{subj}的{key}是{val},不是{exp}。(已验证)")
+                vlines.append(f"不是,{subj}的{disp}是{val},不是{exp}。(已验证)")
             elif st == "unverified":
-                vlines.append(f"{subj}的{key}可能是{val},"
+                vlines.append(f"{subj}的{disp}可能是{val},"
                               f"是否为{exp}尚无验证。(暂定假设,未验证)")
                 certain = False
             else:
-                vlines.append(f"{subj}的{key}未知,无法验证是否为{exp}。")
+                vlines.append(f"{subj}的{disp}未知,无法验证是否为{exp}。")
                 certain = False
             lines.append(vlines[-1])
             continue
         if st == "verified":
-            lines.append(f"{subj}的{key}是{val}。(已验证)")
+            lines.append(f"{subj}的{disp}是{val}。(已验证)")
         elif isinstance(st, str) and st.startswith("inherited"):
-            lines.append(f"{subj}的{key}是{val}。(继承自"
+            lines.append(f"{subj}的{disp}是{val}。(继承自"
                          f"{(o.get('basis') or ['?'])[0]},非实例实测)")
             certain = False
         elif st == "hypothesis":
-            lines.append(f"{subj}的{key}可能是{val}。(暂定假设,未验证)")
+            lines.append(f"{subj}的{disp}可能是{val}。(暂定假设,未验证)")
             certain = False
         else:
-            lines.append(f"{subj}的{key}未知。")
+            lines.append(f"{subj}的{disp}未知。")
             certain = False
+    text = None
     if style == "short" and lines:
-        text = vlines[0] if vlines else lines[0]
-    else:
+        # verification conclusions lead; otherwise join sibling reads so
+        # atomic capabilities (function/function#2…) all surface instead
+        # of only the first line. Still strictly trace-backed.
+        text = vlines[0] if vlines else "；".join(lines)
+    elif lines:
         text = "\n".join(["结论:"] + [f"  {l}" for l in lines])
     for s in learned:
         for app in s.get("outputs", {}).get("applied", []):
@@ -133,12 +142,13 @@ def _explain_conceptual(trace, style) -> dict:
         for f in s.get("outputs", {}).get("fired", []):
             lines.append(f"已验证规则{f.get('rule')}给出:{f.get('conclusion')}")
             cites.append(_cite(s))
-    if style == "short" and lines:
-        text = vlines[0] if vlines else lines[0]
-    elif lines:
-        text = "\n".join(["结论:"] + [f"  {l}" for l in lines])
-    else:
-        text = "没有查到相关知识,无法回答。"
+    if text is None:
+        if style == "short" and lines:
+            text = vlines[0] if vlines else lines[0]
+        elif lines:
+            text = "\n".join(["结论:"] + [f"  {l}" for l in lines])
+        else:
+            text = "没有查到相关知识,无法回答。"
     return {"text": text,
             "certainty": "certain" if certain and not learned else
             ("qualified" if (lines and (not certain or learned)) else "unknown"),

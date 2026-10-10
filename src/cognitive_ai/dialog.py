@@ -134,6 +134,23 @@ def process(session, text: str) -> dict:
                               "certainty": "unknown", "citations": []}
             _log(session, turn)
             return turn
+        # pending concept-definition confirmation (Phase 6G-1): handled
+        # before everything else so 确认/取消/修改 bind to the candidate.
+        if getattr(session, "pending_define", None):
+            turn["route"] = "teach_confirm"
+            turn["answer"] = _define_followup(session, stripped)
+            _log(session, turn)
+            return turn
+        # post-confirm capability amendment (Phase 6G-1收尾): 修改光盒2=…
+        # or 修改功能2=… (topic concept). Touches one row/claim only.
+        mam = re.match(r"^修改\s*(.+)$", stripped)
+        if mam and not getattr(session, "pending_define", None):
+            amended = _amend_saved(session, mam.group(1).strip())
+            if amended is not None:
+                turn["route"] = "teach_confirm"
+                turn["answer"] = amended
+                _log(session, turn)
+                return turn
         small = _is_smalltalk_command(stripped)
         if small and not (getattr(session, "pending_teach", None) or
                           getattr(session, "pending_rule", None)):
@@ -202,6 +219,15 @@ def process(session, text: str) -> dict:
                 "text": "想换话题可以直说新问题（如“计算3+4*2”或"
                         "“介绍一下茶壶”）。本次未写入任何内容。",
                 "certainty": "unknown", "citations": []}
+            _log(session, turn)
+            return turn
+        # concept definition (Phase 6G-1): 我定义了一种叫X的… proposes a
+        # candidate (parsed per clause, unclear parts kept verbatim) and
+        # waits for explicit 确认. Nothing is written before confirmation.
+        from .semantics import extract_definition
+        if extract_definition(work) is not None:
+            turn["route"] = "teach_propose"
+            turn["answer"] = _propose_define(session, work)
             _log(session, turn)
             return turn
         # return-to-topic marker (回到刚才的X，…) binds X as current
@@ -375,6 +401,368 @@ def process(session, text: str) -> dict:
         turn["answer"] = {"text": "处理出错，未写入任何内容。",
                           "certainty": "unknown", "citations": []}
         return turn
+
+
+def _propose_define(session, text: str) -> dict:
+    """Build a teach candidate from a definition sentence (Phase 6G-1).
+
+    Clauses parse independently: capable->function, 是->category hint,
+    有->attribute; failures stay verbatim as unclear parts. Modal
+    inheritance: when a clause parsed as (non-denied) capable and the
+    next clause is coordinator-led (并/且/而/还), otherwise unparsable,
+    negation-free and matches [在X中]action, the modal is inherited and
+    the remainder becomes its own capability -- condition preserved in
+    both the action text and a structured field (schema limit noted in
+    the preview). Ambiguous inheritances stay unclear. Stores
+    session.pending_define, binds the name as topic, writes NOTHING.
+    """
+    import re as _re
+    from .semantics import extract_definition, parse_sentence
+    got = extract_definition(text, session._lexicon())
+    name = got["name"]
+    cand: dict = {"name": name, "category": got.get("category", ""),
+                  "attrs": {}, "capabilities": [], "clear": [],
+                  "unclear": [], "raw": text}
+
+    def _subj_of(subj: str) -> str | None:
+        if subj == name:
+            return name
+        if subj in ("它", "他", "她", "这", "那", "这个", "那个"):
+            return name
+        return None
+
+    def _add_capability(action: str, cond: str | None, raw: str,
+                        modal: str, inherited: bool) -> None:
+        for c in cand["capabilities"]:
+            if c["action"] == action:
+                return
+        cand["capabilities"].append(
+            {"subject": name, "action": action, "condition": cond,
+             "raw": raw, "modal": modal, "inherited": inherited})
+        cand["clear"].append(raw)
+
+    def _has_neg(s: str) -> bool:
+        return any(w in s for w in ("不", "没", "别", "并非", "无法", "不能"))
+
+    modal: str | None = None
+    for cl in got.get("clauses", []):
+        fr = parse_sentence(cl, source="define-clause",
+                            lexicon=session._lexicon())
+        handled = False
+        if fr.intent == "function":
+            for p in fr.predicates:
+                if p.get("type") == "capable" and not p.get("denied"):
+                    subj = _subj_of(p.get("subj", ""))
+                    if subj and p.get("action"):
+                        _add_capability(p["action"], None, cl,
+                                        _cap_modal(cl), False)
+                        modal = _cap_modal(cl) or modal
+                        handled = True
+        elif fr.intent == "attribute":
+            for p in fr.predicates:
+                if p.get("type") == "attr" and p.get("key") and \
+                        not p.get("denied"):
+                    cand["attrs"][p["key"]] = p.get("value")
+                    cand["clear"].append(cl)
+                    handled = True
+        elif fr.intent == "classify":
+            for p in fr.predicates:
+                if p.get("type") == "is_a" and not p.get("denied"):
+                    cand["category"] = cand["category"] or p.get("obj", "")
+                    cand["clear"].append(cl)
+                    handled = True
+        if handled:
+            continue
+        # modal inheritance across 并-coordination (generic, logged).
+        # Only when this clause itself parsed to nothing usable
+        # (unknown): anything with its own reading keeps that reading.
+        stripped = _re.sub(r"^(并|且|而|还|并且)+", "", cl).strip()
+        mcond = _re.match(r"^在(.+?)中", stripped)
+        cond = mcond.group(1) if mcond else None
+        rest = stripped[mcond.end():].strip() if mcond else stripped
+        if modal and fr.intent == "unknown" and not _has_neg(cl) and \
+                len(rest) >= 2:
+            _add_capability(stripped, cond, cl, modal, True)
+        else:
+            if cl not in cand["unclear"]:
+                cand["unclear"].append(cl)
+    session.pending_define = cand
+    _bind_topic(session, cand["name"])
+    parts = [f"我理解到一个新概念：{cand['name']}。"]
+    if cand["category"]:
+        parts.append(f"类别说法是：{cand['category']}（待核对，不虚构归属）。")
+    for i, c in enumerate(cand["capabilities"], 1):
+        line = f"能力{i}：{c['action']}"
+        if c["condition"]:
+            line += f"（条件：在{c['condition']}中）"
+        if c["inherited"]:
+            line += f"（模态“{c['modal']}”继承自上一分句）"
+        parts.append(line + "。")
+    for k, v in cand["attrs"].items():
+        parts.append(f"属性{k}={v}。")
+    if cand["unclear"]:
+        parts.append("以下部分我没能可靠识别（原文保留，未解释）："
+                     + "；".join(cand["unclear"]) + "。")
+    parts.append("表示限制：条件只以文本+结构化字段保留，知识库尚无条件"
+                 "语义，回答时会如实标注。")
+    parts.append("输入“确认”保存理解到的内容，输入“取消”放弃；"
+                 "用“修改 …”调整（如：修改 2=在白天释放光能）。"
+                 "确认前不写入任何知识。")
+    return {"text": "\n".join(parts), "certainty": "unknown",
+            "citations": []}
+
+
+def _cap_modal(clause: str) -> str | None:
+    """Modal trigger that licensed a capable parse (generic list)."""
+    import re as _re
+    m = _re.search(r"(能够|可以|用来|用于|适合|能|会)", clause)
+    return m.group(1) if m else None
+
+
+def _define_followup(session, text: str) -> dict:
+    """Confirm / cancel / amend a pending definition (Phase 6G-1)."""
+    cand = session.pending_define or {}
+    s = text.strip()
+    if s in ("确认", "确认保存", "好的", "保存", "是的", "对"):
+        return _apply_define(session)
+    if s in ("取消", "算了", "不对", "不是", "不要", "放弃"):
+        session.pending_define = None
+        try:
+            session.mem.add_experience(
+                "evaluation", "define teaching cancelled by user",
+                {"op": "define_cancel",
+                 "name": cand.get("name", "")})
+        except Exception:
+            pass
+        return {"text": "已取消本次教学，未写入任何知识。",
+                "certainty": "unknown", "citations": []}
+    body = s
+    for mark in ("修改", "改成", "改为", "应该是", "改一下"):
+        if body.startswith(mark):
+            body = body[len(mark):].strip("，,、 ").strip()
+            break
+    from .semantics import ATTR_WORDS
+    lex = session._lexicon()
+
+    def _canon_key(k: str) -> str:
+        if lex and k in lex:
+            return lex[k]
+        return ATTR_WORDS.get(k, k)
+
+    def _split_cond(text: str) -> tuple[str, str | None]:
+        import re as _re
+        m = _re.match(r"^在(.+?)中", text.strip())
+        if m and m.end() < len(text.strip()):
+            return text.strip(), m.group(1)
+        return text.strip(), None
+
+    amended = False
+    for tok in body.replace("：", "=").split():
+        if "=" not in tok:
+            continue
+        k, v = tok.split("=", 1)
+        k, v = k.strip(), v.strip()
+        if not k or not v:
+            continue
+        import re as _re2
+        mind = _re2.fullmatch(r"(?:功能|能力)?(\d+)", k)
+        if mind:
+            idx = int(mind.group(1)) - 1
+            caps = cand.setdefault("capabilities", [])
+            action, cond = _split_cond(v)
+            if 0 <= idx < len(caps):
+                caps[idx].update(action=action, condition=cond,
+                                 raw=v, modal=None, inherited=False)
+            else:
+                caps.append({"subject": cand.get("name", ""),
+                             "action": action, "condition": cond,
+                             "raw": v, "modal": None, "inherited": False})
+            amended = True
+            continue
+        ck = _canon_key(k)
+        if ck == "function":
+            action, cond = _split_cond(v)
+            cand.setdefault("capabilities", []).append(
+                {"subject": cand.get("name", ""), "action": action,
+                 "condition": cond, "raw": v, "modal": None,
+                 "inherited": False})
+            amended = True
+        else:
+            cand["attrs"][ck] = v
+            amended = True
+    if not amended:
+        from .semantics import parse_sentence
+        fr = parse_sentence(body, source="define-amend",
+                            lexicon=session._lexicon())
+        for p in fr.predicates:
+            if p.get("type") == "capable" and not p.get("denied") \
+                    and p.get("action"):
+                action, cond = _split_cond(p["action"])
+                cand.setdefault("capabilities", []).append(
+                    {"subject": cand.get("name", ""), "action": action,
+                     "condition": cond, "raw": body, "modal": None,
+                     "inherited": False})
+                amended = True
+            elif p.get("type") == "attr" and p.get("key") and \
+                    not p.get("denied"):
+                cand["attrs"][p["key"]] = p.get("value")
+                amended = True
+    if not amended:
+        return {"text": "没能从修改中提取出属性。请用“修改 序号=新能力”"
+                        "（如：修改 2=在白天释放光能）或“修改 属性=值”的格式，"
+                        "或“取消”放弃。",
+                "certainty": "unknown", "citations": []}
+    session.pending_define = cand
+    lines = [f"已更新候选：{cand['name']}。"]
+    for i, c in enumerate(cand.get("capabilities", []), 1):
+        line = f"  能力{i}：{c['action']}"
+        if c.get("condition"):
+            line += f"（条件：在{c['condition']}中）"
+        lines.append(line)
+    for k, v in cand["attrs"].items():
+        lines.append(f"  {k}={v}")
+    lines.append("输入“确认”保存，“取消”放弃。")
+    return {"text": "\n".join(lines), "certainty": "unknown",
+            "citations": []}
+
+
+def _apply_define(session) -> dict:
+    """Write a confirmed candidate through the existing gates.
+
+    Atomicity: EVERY capability becomes its own Claim (hypothesis, with
+    condition/source/raw) and its own attribute row (function for #1,
+    function#N for the rest, hypothesis). Scalars go through
+    learn_from_observation as before. Nothing is joined into one string;
+    nothing is verified here.
+    """
+    cand = session.pending_define or {}
+    session.pending_define = None
+    name = cand.get("name", "")
+    caps = list(cand.get("capabilities", []))
+    scalars = dict(cand.get("attrs", {}))
+    parents: list = []
+    cat = (cand.get("category") or "").strip()
+    if cat:
+        hit = session.mem.get_concept(cat) or next(
+            iter(session.mem.find_concepts_by_name(cat)), None)
+        if hit:
+            parents.append(hit["id"])
+    first = caps[0]["action"] if caps else None
+    attrs = dict(scalars)
+    if first is not None:
+        attrs["function"] = first
+    res = session.learner.learn_from_observation(
+        {"name": name, "parents": parents, "attributes": attrs,
+         "source": "chat-define"})
+    matches = session.mem.find_concepts_by_name(name)
+    cid = matches[0]["id"] if matches else name
+    note = "parents=未知(未虚构)" if not parents else f"parents={parents}"
+    claim_ids: list = []
+    for i, c in enumerate(caps, 1):
+        key = "function" if i == 1 else f"function#{i}"
+        if i > 1:
+            try:
+                session.onto.add_attribute(
+                    cid, key, c["action"], confidence=0.55,
+                    source="chat-define", status="hypothesis")
+            except Exception:
+                pass
+        cond_txt = f"条件：在{c['condition']}中" if c.get("condition") \
+            else "条件：无"
+        modal_txt = f"（模态“{c['modal']}”继承）" if c.get("inherited") \
+            else ""
+        try:
+            claim_id = session.mem.add_claim(
+                f"能力:{name}#{i} {c['action']}（{cond_txt}）{modal_txt}"
+                f"[用户确认定义，非独立验证事实]",
+                subject_id=cid, status="hypothesis", confidence=0.5)
+            session.mem.add_evidence(
+                claim_id, f"原文片段：{c['raw']}", source="chat-define",
+                credibility=0.5)
+            claim_ids.append(claim_id)
+        except Exception:
+            pass
+    try:
+        session.mem.add_experience(
+            "observation", f"define confirmed '{name}' -> {claim_ids}",
+            {"op": "define_confirm", "experience_id": res.get(
+                "experience_id"), "claim_ids": claim_ids,
+             "capabilities": len(caps), "raw": cand.get("raw", "")})
+    except Exception:
+        pass
+    lines = [f"[define] 已保存对'{name}'的理解（用户确认的定义，"
+             f"状态hypothesis，非独立验证事实），{note}。"]
+    lines.append(f"已存{len(caps)}条独立能力候选，各有来源记录。")
+    if cand.get("unclear"):
+        lines.append("未识别部分未写入：" + "；".join(cand["unclear"]) + "。")
+    lines.append("可用“光盒有什么作用”这类问法查询；回答会标注来源。")
+    _bind_topic(session, name)
+    return {"text": "\n".join(lines), "certainty": "unknown",
+            "citations": []}
+
+
+def _amend_saved(session, body: str) -> dict | None:
+    """Amend one persisted capability (Phase 6G-1收尾).
+
+    Forms: 修改光盒2=新能力 / 修改功能2=新能力 (topic concept).
+    Returns None when the input is not such an amendment (caller falls
+    through to normal routing). Only the addressed row + claim change;
+    status/source of every row stay untouched.
+    """
+    import re as _re
+    m = _re.match(r"^(?:功能|能力)(\d+)\s*=\s*(.+)$", body)
+    name, idx, new = None, None, None
+    if m:
+        try:
+            st = session.mem.get_context(session.session_id)
+            ents = st.get("entities", [])
+            name = ents[0].get("text", "") if ents else ""
+        except Exception:
+            name = ""
+        idx, new = int(m.group(1)), m.group(2).strip()
+    else:
+        m2 = _re.match(r"^(.+?)(\d+)\s*=\s*(.+)$", body)
+        if not m2:
+            return None
+        name, idx, new = m2.group(1).strip(), int(m2.group(2)), \
+            m2.group(3).strip()
+    if not name or not new or idx < 1:
+        return None
+    hit = session.mem.get_concept(name) or next(
+        iter(session.mem.find_concepts_by_name(name)), None)
+    if hit is None:
+        return None
+    cid = hit["id"]
+    key = "function" if idx == 1 else f"function#{idx}"
+    rows = [a for a in session.mem.get_attributes(cid)
+            if a.get("key") == key]
+    if not rows:
+        return None
+    other_keys = sorted({a.get("key") for a in
+                         session.mem.get_attributes(cid)
+                         if str(a.get("key", "")).startswith("function")})
+    session.mem.update_attribute_value(rows[0]["id"], new)
+    n_updated_claims = 0
+    for cl in session.mem.list_claims():
+        if cl.get("text", "").startswith(f"能力:{name}#{idx} "):
+            cond_m = _re.match(r"^在(.+?)中", new.strip())
+            cond_txt = f"（条件：在{cond_m.group(1)}中）" if cond_m and \
+                cond_m.end() < len(new.strip()) else "（条件：无）"
+            session.mem.update_claim_text(
+                cl["id"], f"能力:{name}#{idx} {new}{cond_txt}"
+                f"[用户确认定义+修正，非独立验证事实]")
+            n_updated_claims += 1
+    try:
+        session.mem.add_experience(
+            "evaluation", f"define amend saved {name}#{idx}",
+            {"op": "define_amend_saved", "concept": cid, "key": key,
+             "claims": n_updated_claims})
+    except Exception:
+        pass
+    return {"text": f"已修正{name}的能力{idx}为：{new}。"
+                    f"其他能力（{', '.join(other_keys)}）未动，"
+                    f"验证状态不变。",
+            "certainty": "unknown", "citations": []}
 
 
 def _answer_smalltalk(session, kind: str) -> dict:

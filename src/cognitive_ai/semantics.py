@@ -235,6 +235,14 @@ def parse_sentence(sentence: str, source: str = "user",
     # then hedges; generic/instance scope markers. 不可能/没可能 is
     # negation, not hedging; otherwise a hedge scopes widest
     # (大概不会来 = possibly-not, not a flat denial).
+    # Leading conditional-time adjuncts (在…的时候/时/情况下，) scope the
+    # whole sentence and carry no slot meaning: lift them here (before
+    # the modality scan) so 没有 inside them cannot fake a denial.
+    # The raw text keeps them; the strip is logged in the trace.
+    m_when = re.match(r"^在(.+?)(的时候|时|情况下)[，,、]?", s)
+    if m_when and m_when.end() < len(s):
+        s = s[m_when.end():].strip()
+        fr.trace.append(f"time-adjunct stripped: {m_when.group(0)!r}")
     neg = any(re.search(p, s) for p in NEG_PATTERNS)
     hedge = _has_any(s, HEDGES)
     if re.search(r"(不|没|别)可能", s):
@@ -250,6 +258,10 @@ def parse_sentence(sentence: str, source: str = "user",
     # about X的材质是什么): raw text stays in fr.raw, strip is logged.
     # Never for meaning -- bare 请问 with nothing after stays unknown.
     slots = s.replace("都是", "是")
+    # Generic modal/discourse normalization for slot matching ONLY:
+    # 能够->能 (same modal), leading 并/且/而/还 (clause glue).
+    slots = slots.replace("能够", "能")
+    slots = re.sub(r"^(并|且|而|还)+", "", slots)
     for h in sorted(list(HEDGES) + [g for g in GENERIC_MARKS if g != "都是"],
                     key=len, reverse=True):
         slots = slots.replace(h, "")
@@ -612,6 +624,31 @@ def _fill(fr: SemanticFrame, kind: str, m, neg, hedge,
         fr.confidence = 0.85
 
 
+def extract_definition(text: str, lexicon: dict | None = None) -> dict | None:
+    """Split a concept-introduction sentence (Phase 6G-1).
+
+    Generic head pattern only: [我/新][定义/发明/创造/设计/制作/做]
+    [了]一种叫<name>的<rest>. <rest> splits at the first clause boundary
+    into a category word and raw statement clauses. Each clause is parsed
+    separately by the caller (capable->function, 是->category, 有->
+    attribute); nothing here invents meanings. Returns None when the
+    head does not match.
+    """
+    s = _strip_punct(text.strip())
+    m = re.match(r"^(?:我|新)?(?:定义|发明|创造|设计|制作|做)?了?"
+                 r"一种叫(?P<name>.+?)的(?P<rest>.+)$", s)
+    if not m:
+        return None
+    name = _clean_np(m.group("name").strip())
+    rest = m.group("rest").strip()
+    if not name or not rest:
+        return None
+    parts = [p.strip() for p in re.split(r"[，。；;]", rest) if p.strip()]
+    category, clauses = (parts[0], parts[1:]) if parts else ("", [])
+    return {"name": name, "category": category, "clauses": clauses,
+            "raw": text}
+
+
 def _canon_attr(word: str, lex: dict | None = None) -> str:
     if lex and word in lex:
         return lex[word]
@@ -699,6 +736,14 @@ def resolve_question(frame: dict, lexicon: dict | None = None) -> dict:
         t = p.get("type")
         if t == "query_function":
             out.update(kind="function_q", key="function")
+            return out
+        if t == "capable" and not p.get("denied") and \
+                _has_question_word(str(p.get("action", ""))):
+            # 光盒能做什么: ability asked with an interrogative action
+            # is a function question (was: unrecognized -> clarify).
+            out.update(kind="function_q", key="function")
+            out["evidence"].append("capable predicate with "
+                                   "interrogative action")
             return out
         if t == "query_attr" and p.get("key"):
             out.update(kind="attr_q", key=p["key"])

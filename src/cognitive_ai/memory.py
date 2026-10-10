@@ -395,6 +395,19 @@ class Memory:
                 (status, confidence, aid),
             )
 
+    def update_attribute_value(self, aid: int, value: Any) -> None:
+        """Correct one attribute row in place (Phase 6G-1 amend).
+
+        Status/source untouched: a user correction never upgrades or
+        downgrades verification standing by itself.
+        """
+        self.execute("UPDATE attributes SET value=? WHERE id=?",
+                     (json.dumps(value, ensure_ascii=False), aid))
+
+    def update_claim_text(self, cid: int, text: str) -> None:
+        """Correct one claim's text in place (status untouched)."""
+        self.execute("UPDATE claims SET text=? WHERE id=?", (text, cid))
+
     # ---- relations ----
     def add_relation(self, src_id: str, rel_type: str, dst_id: str,
                      confidence: float = 0.8, source: str = "observation",
