@@ -1,7 +1,8 @@
-# Cognitive AI — 持续学习的人工认知系统 (Phase 1 原型)
+# Cognitive AI — 持续学习的人工认知系统
 
 受人类认知过程启发、**不使用预训练 LLM** 的本地认知系统。
 内部思考使用概念/记忆/规则等可检查的数据结构，中文只是输入输出形式之一。
+当前全量测试 326 项通过（`pytest -q`），详见各阶段小节。
 
 > 诚实边界：第一阶段没有文本理解模型，不能可靠理解任意中文句子。
 > 提供结构化观察接口 + 有限中文规则解析（`X是Y` / `X有Y` / `X可以Z`）。
@@ -112,7 +113,8 @@ py -m cognitive_ai.cli rollback 7
 
 ## 已知限制
 
-1. 中文理解仅限结构化输入 + 三种固定句式；任意句子会诚实返回未解析。
+1. 中文理解以组合槽位规则 + 可学习的说法/语义/构式映射为基础（见 6B–6H 章节）；
+   任意长难句、否定/条件全语义、多跳开放问答仍会诚实返回未解析或缺口。
 2. 证据独立性是启发式，不是语义理解：`content_hash` 识别逐字复制，
    excerpt Jaccard（≥0.85）识别轻度改写；改写充分的同源文本、同一事实的
    多手转述会被误判为独立——上限已在测试与文档中声明。相关性分级
@@ -382,3 +384,37 @@ B 0/2 + 2 错误verified（表面移植无检查）；C 2/2 + 3 正确拒绝 0 �
 3. 类别拆分/合并的自动触发条件（基于持续的反例计数，而非单次观察）。
 4. 神经网络模块（随机初始化，独立 `C` 类学习评估，与规则引擎对比测试）。
 5. `ResearchProvider` 的只读本地网页镜像源（仍不伪造结果、无密钥可运行）。
+
+## 统一对话与可学习语义（Phase 6B–6F：对话编排 + 表达学习）
+
+```powershell
+pytest tests/test_dialog_6b.py tests/test_web_dialog_6b.py tests/test_phrase_6c.py tests/test_phrase_generalize_6c.py tests/test_web_phrase_6c.py tests/test_discern_6d.py tests/test_eval_6d.py tests/test_webui.py -q
+```
+
+- 6B：组合式疑问模板（用途/材质/原因问式）+ 统一对话编排器 `dialog.process()`（寒暄/追问/命令/问答/教学预览/未知），数学题经共享 `_detect_math` 路由到现有求解器；`/api/chat` 与 `/api/solve` 同栈。
+- 6C：可学习的说法改写（示例→候选→留存验证→显式激活），单例只做字面映射；对照实验未见表达 0/4→4/4。
+- 6D：语义判别 `resolve_question`（用途/材质/存在性/是非/原因分流）+ A-not-A 验证问答（已验证的"不是"仍是已验证答案）+ 冲突相关性（无关冲突不阻断数学/异属性查询）+ 澄清路由。
+- 6E：直接语义帧学习 `semlearn.py`（逐字段构帧，不改写重解析）+ 三元组对照（用途/材质/存在性互不混淆，误标拒收并注记原因）。
+- 6F：对比验证门（标签—词表一致＋交叉沉默）与误标拒绝率实验。
+- 限制：疑问模板与意图类仍固定；原因问题无因果模型（诚实弃权）；小样本结论勿外推。
+
+## 多轮对话与自然定义教学（Phase 6G：上下文 + 概念学习）
+
+```powershell
+pytest tests/test_conversation_6d.py tests/test_define_6g.py tests/test_conflict_scope_6d.py -q
+```
+
+- 会话级话题/指代/省略/切换/恢复（`dialogue_context` + `pending_*`，会话隔离，重启丢临时态）。
+- 自然定义教学：`我定义了一种叫X的…` 分句解析→候选→确认/取消/序号修正→原子化保存（能力各为独立 Claim + `function`/`function#N` 行，条件文本保留并注记 schema 限制），一律 hypothesis。
+- 限制：条件无完整语义；多值拼单键之外需索引键；复杂省略仍 unknown。
+
+## 统一认知循环与多步推理（Phase 6H：控制器 + 证明链）
+
+```powershell
+pytest tests/test_cycle_6h1.py tests/test_cycle_control_6h1a.py tests/test_construction_6h2b.py tests/test_verbalize_6h2a.py tests/test_cxauto_6h2c.py tests/test_chainreason_6h3a.py -q
+```
+
+- 6H-1：`cognitive_cycle.py` 为普通请求的唯一控制者（构建→执行→验证→决策→渲染，answer/clarification/abstention/failure 四态，可恢复澄清，每循环单条经验）；`executor.solve_text` 为兼容委托入口，不再自带控制循环。
+- 6H-2：双向构式（解析与生成读同一激活行，候选→留存双向验证→显式激活）+ 对话自动发现（确认对→聚类→候选→留存验证，3/2/2 门槛自动激活并审计）+ 组合表达生成（学习面＋固定规范面，角色回查）。
+- 6H-3A：变量绑定多步证明链 `chainreason.py`（深度≤4、访问去重、最弱状态传播、冲突集、无 KB 写入）+ `ChainInfer` 可选操作 + 验证器逐步重查。
+- 限制：规则表无状态列；relations 无生命周期列；NL 无法命名测试专用键；长链/跨域类比仍可能 inconclusive。
