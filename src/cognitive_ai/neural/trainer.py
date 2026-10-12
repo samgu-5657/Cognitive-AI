@@ -35,7 +35,6 @@ def encode_split(vocab: CharVocab, rows: list[dict]):
 
 
 def weights_fingerprint(model) -> str:
-    import hashlib
     h = hashlib.sha256()
     for k in sorted(model.state_dict()):
         h.update(model.state_dict()[k].cpu().numpy().tobytes())

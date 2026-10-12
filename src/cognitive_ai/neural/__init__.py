@@ -1,4 +1,4 @@
-"""Concept-recognition neural net (Phase 3A). Torch is OPTIONAL.
+"""Concept-recognition neural net. Torch is OPTIONAL.
 
 Rule system modules must never import torch. Everything torch-dependent
 goes through `require_torch()` so a missing torch only disables this

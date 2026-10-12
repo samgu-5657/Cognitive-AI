@@ -67,42 +67,6 @@ def seed_from_json(mem: Memory, path: str) -> None:
     SchemaEvolver(mem).ensure_initial_version()
 
 
-def cmd_chat(_a):
-    import sys as _sys
-    try:
-        _sys.stdin.reconfigure(encoding="utf-8")
-        _sys.stdout.reconfigure(encoding="utf-8")
-    except Exception:
-        pass
-    from cognitive_ai.interact import Session
-    from cognitive_ai.schema_evolver import SchemaEvolver
-    mem = get_memory()
-    sess = Session(mem, CORPUS, models_root=MODELS,
-                   queue_path=os.path.join(DATA, "neural", "queue",
-                                           "unknown.jsonl"))
-    print("== Cognitive AI 交互教学 ==")
-    print(f"知识版本: v{SchemaEvolver(mem).current_version()}  "
-          f"概念数: {len(mem.list_concepts())}")
-    print(sess.handle("模型")[0])
-    print("输入'帮助'查看命令,'退出'结束。")
-    try:
-        while True:
-            try:
-                line = input("你> ")
-            except (EOFError, KeyboardInterrupt):
-                print()
-                line = "退出"
-            out = sess.handle(line)
-            for ln in out:
-                if ln == "__quit__":
-                    continue
-                print(ln)
-            if "__quit__" in out:
-                break
-    finally:
-        mem.close()
-
-
 def cmd_concepts(_a):
     mem = get_memory()
     for c in Ontology(mem).list():
@@ -303,7 +267,7 @@ def cmd_neural_compare(a):
     data = os.path.join(DATA, "neural")
     te = load_jsonl(os.path.join(data, "test.jsonl"))
     for tag in a.tags.split(","):
-        root = os.path.join(ROOT, "models", tag.strip())
+        root = os.path.join(MODELS, tag.strip())
         try:
             ad = NeuralAdapter(os.path.join(root, "best.pt"),
                                os.path.join(root, "vocab.json"))
@@ -314,29 +278,6 @@ def cmd_neural_compare(a):
                   f"reject={rep['unknown_rejection_rate']}")
         except Exception as e:
             print(f"[{tag}] unavailable: {e}")
-
-
-def cmd_neural_intent_train(a):
-    from cognitive_ai.neural.intent import (check_group_isolation,
-                                            load_rows, train_intent)
-    data = os.path.join(DATA, "semantics")
-    tr = load_rows(os.path.join(data, "train.jsonl"))
-    va = load_rows(os.path.join(data, "val.jsonl"))
-    te = load_rows(os.path.join(data, "test.jsonl"))
-    leak = check_group_isolation(("train", tr), ("val", va), ("test", te))
-    print(json.dumps({"leakage_check": leak}, ensure_ascii=False, indent=2))
-    if not leak["ok"]:
-        raise SystemExit("data leakage detected; refusing to train")
-    out = train_intent(tr, va, os.path.join(ROOT, "models", a.tag),
-                       seed=a.seed, epochs=a.epochs)
-    print(json.dumps(out, ensure_ascii=False, indent=2))
-
-
-def cmd_neural_intent_eval(a):
-    from cognitive_ai.neural.intent import (compare_rule_vs_net, load_rows)
-    te = load_rows(os.path.join(DATA, "semantics", "test.jsonl"))
-    rep = compare_rule_vs_net(te, os.path.join(ROOT, "models", a.tag))
-    print(json.dumps(rep["per_intent"], ensure_ascii=False, indent=2))
 
 
 def _queue_path():
@@ -382,7 +323,6 @@ def cmd_neural_queue_dedup(_a):
 
 
 def cmd_neural_queue_export(a):
-    import os
     from cognitive_ai.neural.queue import UnknownQueue
     q = UnknownQueue(_queue_path())
     rows = [{"id": r["sample_id"], "group": f"rev-{r['sample_id']}",
@@ -396,22 +336,30 @@ def cmd_neural_queue_export(a):
     print(json.dumps({"ok": True, "exported": len(rows), "file": a.out}))
 
 
-def _load_ood_bundle(model_dir: str) -> dict | None:
-    from cognitive_ai.neural.ood import load_artifacts
-    arts = load_artifacts(model_dir)
-    if not (arts["prototypes.json"] and arts["ood_thresholds.json"]):
-        return None
-    # Raw probabilities: the temperature fit did not improve ECE or
-    # accept-precision (see Phase 3C report), so verdicts stay unscaled.
-    return {"protos": arts["prototypes.json"],
-            "thresholds": arts["ood_thresholds.json"],
-            "temperature": 1.0}
+def cmd_neural_ood_build(a):
+    from cognitive_ai.neural.adapter import NeuralAdapter
+    from cognitive_ai.neural.dataset import load_jsonl
+    from cognitive_ai.neural.ood import (class_prototypes, fit_temperature,
+                                         save_artifacts, tune_thresholds)
+    root = os.path.join(MODELS, a.tag)
+    ad = NeuralAdapter(os.path.join(root, "best.pt"),
+                       os.path.join(root, "vocab.json"))
+    data = os.path.join(DATA, "neural")
+    tr = load_jsonl(os.path.join(data, "train.jsonl"))
+    va = load_jsonl(os.path.join(data, "val.jsonl"))
+    protos = class_prototypes(ad.model, ad.vocab, tr)
+    calib = fit_temperature(ad.model, ad.vocab, va)
+    th = tune_thresholds(ad.model, ad.vocab, protos, va,
+                         ece=calib["ece_before"])
+    paths = save_artifacts(root, protos, calib, th)
+    print(json.dumps({"calibration": calib, "thresholds": th,
+                      "files": paths}, ensure_ascii=False, indent=2))
 
 
 def cmd_neural_ood(a):
     from cognitive_ai.neural.adapter import NeuralAdapter
     from cognitive_ai.neural.ood import assess, load_artifacts
-    root = os.path.join(ROOT, "models", a.tag)
+    root = os.path.join(MODELS, a.tag)
     arts = load_artifacts(root)
     if not (arts["prototypes.json"] and arts["ood_thresholds.json"]):
         print(json.dumps({"ok": False,
@@ -421,7 +369,7 @@ def cmd_neural_ood(a):
                        os.path.join(root, "vocab.json"))
     second = None
     if a.second:
-        sroot = os.path.join(ROOT, "models", a.second)
+        sroot = os.path.join(MODELS, a.second)
         sad = NeuralAdapter(os.path.join(sroot, "best.pt"),
                             os.path.join(sroot, "vocab.json"))
         second = (sad.model, sad.vocab)
@@ -434,13 +382,12 @@ def cmd_neural_ood(a):
 
 
 def cmd_neural_discover(a):
-    import json as _json
     from cognitive_ai.neural.adapter import NeuralAdapter
     from cognitive_ai.neural.discovery import (discover, l2_prototypes,
                                                validate_proposal)
     from cognitive_ai.neural.ood import class_prototypes, load_artifacts
     from cognitive_ai.neural.queue import UnknownQueue
-    root = os.path.join(ROOT, "models", a.tag)
+    root = os.path.join(MODELS, a.tag)
     arts = load_artifacts(root)
     ad = NeuralAdapter(os.path.join(root, "best.pt"),
                        os.path.join(root, "vocab.json"))
@@ -476,12 +423,12 @@ def cmd_neural_incremental(a):
     if not new_rows:
         print(json.dumps({"ok": False, "error": "no accepted samples"}))
         return
-    base = os.path.join(ROOT, "models", a.base)
+    base = os.path.join(MODELS, a.base)
     replay = [r for r in load_jsonl(a.train) if r.get("level1")]
     out = incremental_train(os.path.join(base, "best.pt"),
                             os.path.join(base, "vocab.json"),
                             new_rows, replay,
-                            os.path.join(ROOT, "models", a.out),
+                            os.path.join(MODELS, a.out),
                             epochs=a.epochs, seed=a.seed,
                             replay_ratio=a.replay_ratio)
     print(json.dumps(out, ensure_ascii=False, indent=2, default=str))
@@ -493,7 +440,7 @@ def cmd_neural_gate(a):
                                           evaluate_pair, promote)
     reg = [r for r in load_jsonl(a.regression) if r.get("level1")]
     new = [r for r in load_jsonl(a.new) if r.get("level1")] if a.new else []
-    root = os.path.join(ROOT, "models")
+    root = MODELS
     pair = evaluate_pair(os.path.join(root, a.base),
                          os.path.join(root, a.candidate), reg, new)
     dec = decide(pair, PromotionPolicy(
@@ -513,36 +460,14 @@ def cmd_neural_gate(a):
 
 def cmd_neural_active(_a):
     from cognitive_ai.neural.gate import read_active
-    print(json.dumps(read_active(os.path.join(ROOT, "models")),
+    print(json.dumps(read_active(MODELS),
                      ensure_ascii=False, indent=2))
 
 
 def cmd_neural_rollback(_a):
     from cognitive_ai.neural.gate import rollback_active
-    print(json.dumps(rollback_active(os.path.join(ROOT, "models")),
+    print(json.dumps(rollback_active(MODELS),
                      ensure_ascii=False, indent=2))
-
-
-def cmd_ui(a):
-    try:
-        from cognitive_ai.web.server import create_app
-    except RuntimeError as e:
-        print(str(e))
-        raise SystemExit(2)
-    import uvicorn
-    host = "127.0.0.1"
-    port = a.port
-    if not (1 <= port <= 65535):
-        print("拒绝: 端口超出范围。")
-        raise SystemExit(2)
-    print(f"Cognitive AI 工作台启动中…\n  地址: http://{host}:{port}/\n"
-          f"  数据目录: {DATA}\n  模型目录: {MODELS}")
-    app = create_app(DATA, MODELS)
-    try:
-        uvicorn.run(app, host=host, port=port, log_level="warning")
-    except OSError as e:
-        print(f"启动失败(端口可能被占用): {e}")
-        raise SystemExit(1)
 
 
 def cmd_neural_cycle(a):
@@ -550,7 +475,7 @@ def cmd_neural_cycle(a):
     from cognitive_ai.neural.cycle import cycle_predict, maybe_train
     from cognitive_ai.neural.gate import read_active
     from cognitive_ai.neural.queue import UnknownQueue
-    root = os.path.join(ROOT, "models")
+    root = MODELS
     act = read_active(root) or {"tag": "cnn-v1"}
     tag = act["tag"]
     ad = NeuralAdapter(os.path.join(root, tag, "best.pt"),
@@ -571,106 +496,6 @@ def cmd_neural_cycle(a):
     mem.close()
 
 
-def _load_example_file(path: str) -> list[dict]:
-    rows = []
-    with open(path, encoding="utf-8") as fh:
-        for line in fh:
-            line = line.strip()
-            if line:
-                rows.append(json.loads(line))
-    return rows
-
-
-def cmd_rule_induce(a):
-    from cognitive_ai import rulelearn as RL
-    train = _load_example_file(a.train)
-    negs = _load_example_file(a.neg) if a.neg else []
-    rep = RL.induce(train, negs, domain=a.domain)
-    print(json.dumps(rep, ensure_ascii=False, indent=2, default=str))
-    if a.save and rep["candidates"]:
-        mem = get_memory()
-        rid = RL.new_rule_id(a.name)
-        mem.save_rule(RL.make_proposal_record(
-            rid, a.name, a.domain, rep["candidates"],
-            evidence=[{"train": a.train, "neg": a.neg}]))
-        mem.add_experience("evaluation", f"rule proposal {rid}",
-                           {"op": "rule_induce", "outcome": "candidate",
-                            "candidates": len(rep["candidates"]),
-                            "ambiguous": rep["ambiguous"]})
-        print(json.dumps({"saved": rid}, ensure_ascii=False))
-        mem.close()
-
-
-def cmd_rule_list(a):
-    from cognitive_ai import rulelearn as RL  # noqa: F401
-    mem = get_memory()
-    for r in mem.list_rules_learned(status=a.status or None,
-                                    domain=a.domain or None):
-        print(f"{r['id']} v{r['version']} [{r['status']}] {r['name']} "
-              f"calls={r['calls']}/{r['successes']}/{r['failures']}")
-    mem.close()
-
-
-def cmd_rule_show(a):
-    mem = get_memory()
-    print(json.dumps(mem.get_rule(a.rule_id), ensure_ascii=False,
-                     indent=2, default=str))
-    mem.close()
-
-
-def cmd_rule_select(a):
-    from cognitive_ai import rulelearn as RL
-    mem = get_memory()
-    row = mem.get_rule(a.rule_id)
-    if not row:
-        print(json.dumps({"ok": False, "error": "rule not found"}))
-        return
-    out = RL.select_candidate(row, a.index, a.reason)
-    if out.get("ok"):
-        mem.save_rule(row)
-    print(json.dumps(out, ensure_ascii=False))
-
-
-def cmd_rule_validate(a):
-    from cognitive_ai import rulelearn as RL
-    mem = get_memory()
-    row = mem.get_rule(a.rule_id)
-    if not row:
-        print(json.dumps({"ok": False, "error": "rule not found"}))
-        mem.close()
-        return
-    try:
-        spec = RL.selected_spec(row)
-    except RL.Unsupported as e:
-        print(json.dumps({"ok": False, "error": str(e)}))
-        mem.close()
-        return
-    held = _load_example_file(a.heldout)
-    negs = _load_example_file(a.neg) if a.neg else []
-    train = _load_example_file(a.train) if a.train else []
-    from cognitive_ai.ontology import Ontology
-    rep = RL.validate_rule(spec, train, held, negs, Ontology(mem))
-    row["validation"] = {**rep, "selected":
-                         row["spec"].get("selected")}
-    mem.save_rule(row)
-    out = RL.apply_validation_outcome(mem, a.rule_id, row["validation"],
-                                      a.activate)
-    mem.add_experience("evaluation", f"rule validate {a.rule_id}: {out}",
-                       {"op": "rule_validate", "outcome": "rule",
-                        "report": rep})
-    print(json.dumps({"validation": rep, "promotion": out},
-                     ensure_ascii=False, indent=2, default=str))
-    mem.close()
-
-
-def cmd_rule_rollback(a):
-    from cognitive_ai import rulelearn as RL
-    mem = get_memory()
-    print(json.dumps(RL.rollback_record(mem, a.rule_id),
-                     ensure_ascii=False))
-    mem.close()
-
-
 def cmd_doctor(_a):
     mem = get_memory()
     onto = Ontology(mem)
@@ -678,11 +503,6 @@ def cmd_doctor(_a):
     for c in mem.list_concepts():
         if c["id"] in onto.ancestors(c["id"]):
             problems.append(f"cycle at {c['id']}")
-    cup = mem.get_concept("cup")
-    if cup is None:
-        problems.append("core concept 'cup' missing")
-    elif "container" not in onto.ancestors("cup"):
-        problems.append("cup lost ancestor 'container'")
     ok, msg = default_regression(mem)
     print(json.dumps({
         "concepts": len(mem.list_concepts()),
@@ -701,9 +521,6 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="cognitive_ai",
                                 description="Cognitive AI CLI")
     sub = p.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("chat").set_defaults(fn=cmd_chat)
-    s = sub.add_parser("ui"); s.add_argument("--port", type=int, default=8765)
-    s.set_defaults(fn=cmd_ui)
     sub.add_parser("concepts").set_defaults(fn=cmd_concepts)
     s = sub.add_parser("inspect"); s.add_argument("id"); s.set_defaults(fn=cmd_inspect)
     s = sub.add_parser("observe"); s.add_argument("--json", default=None); s.add_argument("--json-file", default=None); s.set_defaults(fn=cmd_observe)
@@ -739,11 +556,6 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(fn=cmd_neural_predict)
     s = sub.add_parser("neural-compare"); s.add_argument("--tags", default="cnn-v1,gru-v1")
     s.set_defaults(fn=cmd_neural_compare)
-    s = sub.add_parser("neural-intent-train"); s.add_argument("--tag", default="intent-v1")
-    s.add_argument("--seed", type=int, default=21); s.add_argument("--epochs", type=int, default=60)
-    s.set_defaults(fn=cmd_neural_intent_train)
-    s = sub.add_parser("neural-intent-eval"); s.add_argument("--tag", default="intent-v1")
-    s.set_defaults(fn=cmd_neural_intent_eval)
     s = sub.add_parser("neural-queue"); s.add_argument("--status", default=None)
     s.add_argument("--limit", type=int, default=50); s.set_defaults(fn=cmd_neural_queue)
     s = sub.add_parser("neural-queue-show"); s.add_argument("sample_id")
@@ -755,6 +567,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("neural-queue-dedup").set_defaults(fn=cmd_neural_queue_dedup)
     s = sub.add_parser("neural-queue-export"); s.add_argument("--out", required=True)
     s.set_defaults(fn=cmd_neural_queue_export)
+    s = sub.add_parser("neural-ood-build"); s.add_argument("--tag", default="cnn-v1")
+    s.set_defaults(fn=cmd_neural_ood_build)
     s = sub.add_parser("neural-ood"); s.add_argument("text")
     s.add_argument("--tag", default="cnn-v1"); s.add_argument("--second", default="")
     s.set_defaults(fn=cmd_neural_ood)
@@ -782,23 +596,6 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--batch-min", type=int, default=5); s.add_argument("--epochs", type=int, default=30)
     s.add_argument("--budget", type=float, default=600.0)
     s.set_defaults(fn=cmd_neural_cycle)
-    s = sub.add_parser("rule-induce"); s.add_argument("--train", required=True)
-    s.add_argument("--neg", default=None); s.add_argument("--domain", default="math")
-    s.add_argument("--name", required=True); s.add_argument("--save", action="store_true")
-    s.set_defaults(fn=cmd_rule_induce)
-    s = sub.add_parser("rule-list"); s.add_argument("--status", default=None)
-    s.add_argument("--domain", default=None); s.set_defaults(fn=cmd_rule_list)
-    s = sub.add_parser("rule-show"); s.add_argument("rule_id")
-    s.set_defaults(fn=cmd_rule_show)
-    s = sub.add_parser("rule-select"); s.add_argument("rule_id")
-    s.add_argument("index", type=int); s.add_argument("--reason", default="reviewer choice")
-    s.set_defaults(fn=cmd_rule_select)
-    s = sub.add_parser("rule-validate"); s.add_argument("rule_id")
-    s.add_argument("--train", default=None); s.add_argument("--heldout", required=True)
-    s.add_argument("--neg", default=None); s.add_argument("--activate", action="store_true")
-    s.set_defaults(fn=cmd_rule_validate)
-    s = sub.add_parser("rule-rollback"); s.add_argument("rule_id")
-    s.set_defaults(fn=cmd_rule_rollback)
     sub.add_parser("doctor").set_defaults(fn=cmd_doctor)
     return p
 

@@ -1,4 +1,4 @@
-"""Continual-learning cycle driver (Phase 3B, Task 7).
+"""Continual-learning cycle driver.
 
 One cycle (never one training per unknown input):
   1. predict input via the adapter (active checkpoint);
@@ -18,8 +18,8 @@ from __future__ import annotations
 import os
 import time
 
-from .adapter import NeuralAdapter, UNKNOWN_THRESHOLD
-from .gate import decide, evaluate_pair, promote, read_active
+from .adapter import NeuralAdapter
+from .gate import decide, evaluate_pair, promote
 from .queue import UnknownQueue
 
 

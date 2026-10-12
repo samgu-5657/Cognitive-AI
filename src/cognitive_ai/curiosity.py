@@ -7,7 +7,6 @@ All factors in [0,1]; weights non-negative. Higher score = explore first.
 """
 from __future__ import annotations
 
-from typing import Any
 
 from .memory import Memory
 from .novelty import NoveltyDetector

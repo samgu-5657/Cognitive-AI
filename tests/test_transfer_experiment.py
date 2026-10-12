@@ -30,7 +30,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 from cognitive_ai.cli import seed_from_json
 from cognitive_ai.curiosity import Curiosity
 from cognitive_ai.learner import Learner
-from cognitive_ai.loop import ExplorationLoop
 from cognitive_ai.memory import Memory
 from cognitive_ai.ontology import Ontology
 

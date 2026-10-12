@@ -1,7 +1,7 @@
 """Independent test evaluation: accuracy, P/R/F1, confusion, rejection.
 
-Also ships the keyword RULE BASELINE so every report compares the net
-against the existing symbolic parser on identical inputs.
+Also ships a keyword baseline (hand-picked characters per level-1 class)
+so every report compares the net against it on identical inputs.
 """
 from __future__ import annotations
 

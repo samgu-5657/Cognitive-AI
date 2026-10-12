@@ -1,420 +1,142 @@
-# Cognitive AI — 持续学习的人工认知系统
+# Cognitive AI
 
-受人类认知过程启发、**不使用预训练 LLM** 的本地认知系统。
-内部思考使用概念/记忆/规则等可检查的数据结构，中文只是输入输出形式之一。
-当前全量测试 326 项通过（`pytest -q`），详见各阶段小节。
+一个用 Python 标准库 + SQLite 写的**符号化概念知识库**，外加一个可选的、从随机初始化开始训练的
+**字符级 CNN 文本分类器**。不使用任何预训练模型或在线 LLM。
 
-> 诚实边界：第一阶段没有文本理解模型，不能可靠理解任意中文句子。
-> 提供结构化观察接口 + 有限中文规则解析（`X是Y` / `X有Y` / `X可以Z`）。
+项目名里的 "Cognitive" 只是一个目标方向，不代表现有代码具备认知、理解或推理能力。
+进度、实测数字和已移除的部分见 [PROGRESS.md](PROGRESS.md)。
 
-## 功能状态
+## 它实际是什么
 
-- Implemented: 数据模型、概念体系（多重继承+循环检测）、SQLite 持久化
-  （含 Phase 2 向后兼容迁移：`lifecycle_events` 表 + evidences 指纹列）、
-  规则推理（继承/例外/冲突/unknown）、新颖性检测、结构演化（版本+回滚）、
-  好奇心评分+问题队列、本地语料研究（停用词/词边界/内容指纹/相关性分级）、
-  知识生命周期（candidate→hypothesis→supported→verified + contested/
-  rejected/superseded，自主管线最高 hypothesis）、分类器 `classify`
- （match/ambiguous/novel）、验证式结构学习 `consolidate()`、
-  10 案例评测集 + A/B/C 对照实验、无限运行防护、CLI、全部测试。
-- Interface-only: `WebSearchProvider`（显式抛 `NotImplementedError`，不伪造结果）。
-- Planned: 神经网络模块（随机初始化，独立评估）、公开网页搜索、更丰富的中文解析。
+**1. 概念知识库（`src/cognitive_ai/`，无第三方依赖）**
 
-## 快速开始 (Windows PowerShell)
+- 概念存在 SQLite 里，支持多重继承（带环检测），属性沿祖先链继承，离得最近的定义优先。
+- 一个很小的前向规则引擎：条件只有 `is_a` / `has_attr` / `relation` 三种，支持例外条件；
+  缺数据时返回 `unknown`，不会去猜。
+- 结构修改（加概念、改父类、拆分/合并类别等）都会先存快照、跑回归检查，再生成新版本号，
+  之后可以回滚到任意一个版本。
+- 每条属性带状态：`candidate → hypothesis → supported → verified`，另有
+  `contested / rejected / superseded`。自动流程最高只能写到 `hypothesis`，
+  再往上必须显式调用 `promote`。
+- "自主探索"：根据知识缺口（缺属性、没关系、孤立概念、冲突）生成问题，然后在本地 `data/corpus/`
+  的 3 个小文本文件里做关键词检索，用正则抽出 `key: value` / `key是value`。
+  必须有 ≥2 个独立来源（按内容哈希 + 摘录相似度去重）给出同一个短值，才会以 `hypothesis` 写入。
+  每次运行都有步数和时间上限。
+- 按属性重合度给结构化观察打分，结论是 `match / ambiguous / novel / insufficient` 之一。
 
-> 本机 `python` 指向 Microsoft Store 存根（执行失败），请使用 `py` 启动器。
-> 控制台默认编码 (GBK) 可能把中文显示为 `????`，JSON 数据本身为 UTF-8，不影响存储与测试。
+**2. 神经分类器（`src/cognitive_ai/neural/`，需要 PyTorch）**
 
-```powershell
-cd C:\AI\cognitive-ai
-py -m pip install -e ".[test]"
-py -m cognitive_ai.cli doctor
-py -m cognitive_ai.cli concepts
-py -m cognitive_ai.cli inspect cup
-py -m cognitive_ai.cli gaps
-py -m cognitive_ai.cli questions
-py -m cognitive_ai.cli explore --steps 5
-py -m cognitive_ai.cli history
-py -m cognitive_ai.cli experiences --limit 10
+- 字符嵌入 → 1-D 卷积（核宽 2/3/4）→ max-pool → 两个输出头（5 个一级类别 + 二级类别）。
+  另附一个双向 GRU 用来对比。
+- 训练数据是手写的中文短词/短句：train 174 / val 54 / test 77（`data/neural/`），
+  按语义组划分，训练前会检查有没有组泄漏。
+- 测试集上一级准确率 0.42，**比手写关键词基线（0.435）还低**。详见 PROGRESS.md。
+- 外围工具：未知样本隔离队列（模型预测不会自动变成标签）、人工审核、增量训练（新样本 + 旧样本回放）、
+  回归门禁（指针切换，不覆盖旧权重，可回滚）、OOD 判定、候选类别发现。
+- 网络输出只会以 `candidate` Claim 的形式进库，不会直接改属性或版本。
+
+注意：这个 CNN 处理的是汉字序列（文本分类），不是图像。它和知识库之间只通过 `candidate` Claim 连接，
+知识库的任何功能都不依赖它。
+
+## 它不是什么
+
+- 它不懂中文。自由文本输入只支持 `X是Y` / `X有Y` / `X可以Z` 三个正则（`cli parse`），
+  其余输入都需要写成结构化 JSON。
+- 它不做语义检索。"研究"就是在约 1 KB 的本地文本里做关键词匹配加正则抽取；"独立来源"
+  判断只能识别逐字复制和轻度改写。
+- 它不是在持续学习。知识库的更新就是往数据库插行、改状态；神经网络只有在你手动跑训练命令时才会更新。
+- `WebSearchProvider` 只是个接口，调用时直接抛 `NotImplementedError`。
+
+## 安装与运行
+
+需要 Python ≥ 3.12。Windows 上把 `python` 换成 `py`。
+
+```bash
+pip install -e ".[test]"          # 核心 + pytest
+pip install -e ".[neural]"        # 可选：PyTorch，神经分类器要用
 pytest -q
 ```
 
-以 `src` 直接运行（未安装时）：
+默认数据库是 `data/cognitive.db`，第一次运行时用 `data/concepts.json` 初始化。
+想在隔离环境里跑，可以设置 `COGNITIVE_AI_DATA`（目录里要有 `concepts.json` 和 `corpus/`）
+和 `COGNITIVE_AI_MODELS`。
 
-```powershell
-$env:PYTHONPATH = "C:\AI\cognitive-ai\src"
-python -m cognitive_ai.cli doctor
+### 知识库命令
+
+```bash
+python -m cognitive_ai.cli doctor                 # 健康检查（环检测 + 回归门）
+python -m cognitive_ai.cli concepts               # 列出概念
+python -m cognitive_ai.cli inspect cup            # 概念详情（含继承属性）
+python -m cognitive_ai.cli query --json '{"type":"get_attribute","concept":"cup","key":"function"}'
+python -m cognitive_ai.cli observe --json-file obs.json   # 结构化观察 → 学习
+python -m cognitive_ai.cli parse 杯子是容器        # 三种句式的正则解析
+python -m cognitive_ai.cli gaps                   # 知识缺口
+python -m cognitive_ai.cli questions              # 生成并打分研究问题
+python -m cognitive_ai.cli explore --steps 5      # 有预算的自主探索
+python -m cognitive_ai.cli consolidate            # 尝试按稳定的属性分歧拆分类别（走回归门）
+python -m cognitive_ai.cli history                # 版本与结构修改记录
+python -m cognitive_ai.cli rollback 1             # 回滚到某个版本
+python -m cognitive_ai.cli lifecycle --describe   # 生命周期规则
+python -m cognitive_ai.cli promote <attr_id> supported --evidence '[...]'
+python -m cognitive_ai.cli experiences --limit 20
 ```
 
-## 演示场景
+`observe` 的输入格式：
 
-```powershell
-# 场景一：基本分类（杯子的多重归属存储在概念体系中）
-py -m cognitive_ai.cli inspect cup
-
-# 场景二：发现未知概念（结构化观察，用 --json-file 避免 PowerShell 引号剥离）
-py -m cognitive_ai.cli observe --json-file obs_novel.json
-# obs_novel.json 内容示例：
-# {"name": "teapot", "parents": ["vessel"],
-#  "attributes": {"material": "clay", "function": "brewing"}}
-
-# 场景三：拆分过于宽泛的类别（测试覆盖 vessel→open/closed split + 回滚，
-# 见 tests/test_learning_loop.py::test_split_scenario）；交互式拆分：
-py -m cognitive_ai.cli history
-#   在 Python 中：
-#   from cognitive_ai.memory import Memory
-#   from cognitive_ai.schema_evolver import SchemaEvolver
-#   from cognitive_ai.learner import default_regression
-#   m = Memory("data/cognitive.db")
-#   e = SchemaEvolver(m, default_regression)
-#   cid = e.propose("split_category",
-#       {"category": "vessel",
-#        "groups": {"open_vessel": ["bowl"], "closed_vessel": ["bottle"]}},
-#       reason="bowl/bottle 在 has_lid 上存在稳定差异")
-#   print(e.apply_proposal(cid))
-
-# 场景四：自主发现研究问题并研究
-py -m cognitive_ai.cli gaps
-py -m cognitive_ai.cli explore --steps 5
-
-# 场景五：持久化（退出重进后知识仍在；每次 CLI 调用都是新进程，直接证明）
-py -m cognitive_ai.cli concepts
-py -m cognitive_ai.cli doctor
-
-# 场景六：冲突与回滚（verified 值不被覆盖；回滚移除 contested 行）
-py -m cognitive_ai.cli observe --json-file obs_conflict.json
-# obs_conflict.json 内容示例：{"name": "杯子", "attributes": {"material": "glass"}}
-py -m cognitive_ai.cli history
-py -m cognitive_ai.cli rollback 7
+```json
+{"name": "teapot", "parents": ["vessel"],
+ "attributes": {"material": "clay", "function": "brewing"}}
 ```
 
-## CLI 命令
+### 神经网络命令（需要 torch）
 
-| 命令 | 说明 |
+```bash
+python -m cognitive_ai.cli neural-train --model cnn --tag cnn-v1 --seed 7 --epochs 300
+python -m cognitive_ai.cli neural-eval --tag cnn-v1
+python -m cognitive_ai.cli neural-compare --tags cnn-v1,gru-v1
+python -m cognitive_ai.cli neural-predict 杯子 --tag cnn-v1 [--submit]
+python -m cognitive_ai.cli neural-ood-build --tag cnn-v1     # 原型 + 阈值（只用 train/val）
+python -m cognitive_ai.cli neural-ood 跑步机 --tag cnn-v1
+python -m cognitive_ai.cli neural-cycle 激光打印机            # 预测；低置信进隔离队列
+python -m cognitive_ai.cli neural-queue --status pending
+python -m cognitive_ai.cli neural-review <id> --l1 entity --l2 electronics --accept
+python -m cognitive_ai.cli neural-incremental --base cnn-v1 --out cnn-cand1
+python -m cognitive_ai.cli neural-queue-export --out reviewed.jsonl
+python -m cognitive_ai.cli neural-gate --base cnn-v1 --candidate cnn-cand1 --new reviewed.jsonl --promote
+python -m cognitive_ai.cli neural-active
+python -m cognitive_ai.cli neural-rollback
+python -m cognitive_ai.cli neural-discover --tag cnn-v1
+```
+
+权重保存在 `models/`，不提交到仓库。
+
+## 代码结构
+
+| 模块 | 作用 |
 |---|---|
-| `concepts` | 查看当前概念体系 |
-| `inspect <id>` | 查看概念属性/关系/继承 |
-| `observe --json '{...}'` / `--json-file f` | 添加结构化观察并学习 |
-| `parse <句子>` | 有限中文规则解析演示 |
-| `query --json '{...}'` / `--json-file f` | 推理查询 (`is_a`/`get_attribute`/`relations`/`conflicts`) |
-| `gaps` | 查看知识缺口 |
-| `questions` | 生成候选研究问题 |
-| `explore --steps N` | 运行 N 步自主探索（有预算上限） |
-| `experiences --limit N` | 查看学习经历 |
-| `history` | 查看结构修改历史与版本 |
-| `rollback <version>` | 回滚至指定版本 |
-| `doctor` | 健康检查 |
+| `models.py` | 数据类，不含 IO |
+| `memory.py` | 唯一的 SQLite 访问层，含增量迁移 |
+| `ontology.py` | 概念增删改查、多重继承、环检测、属性继承 |
+| `reasoner.py` | `is_a` / 属性 / 关系查询，前向规则，冲突检查 |
+| `novelty.py` | 观察的新颖性检查、知识缺口、三句式正则解析 |
+| `schema_evolver.py` | 唯一能改概念结构的模块：提案 → 回归 → 版本 / 回滚 |
+| `curiosity.py` | 从缺口生成问题，用加权公式打分 |
+| `research.py` | `LocalCorpusProvider`（关键词 + 内容哈希 + 相关性分级） |
+| `lifecycle.py` | 知识状态机与晋升条件 |
+| `learner.py` | 观察 → 研究 → 写库；`classify`；`consolidate` |
+| `loop.py` | 带步数 / 时间预算的探索循环 |
+| `policy.py` | 所有阈值集中在这里 |
+| `cli.py` | 命令行入口，不放业务逻辑 |
+| `neural/` | 词表、数据集、模型、训练、评测、适配器、队列、门禁、OOD、类别发现 |
 
-## 三种学习（本项目严格区分）
+## 已知问题
 
-- A. 情景记忆更新 → `experiences` 表。
-- B. 认知结构更新 → `schema_changes` + `schema_versions`，可回滚。
-- C. 神经网络参数更新 → Phase 1 未实现，未来独立模块。
+- 回归门 `learner.default_regression` 只检查"没有环"和"`cup` 仍是 `container` 的后代"，
+  和种子数据绑得很死，算不上真正的回归测试。
+- `curiosity.IMPORTANT_CONCEPTS` 写死了 4 个种子概念 id，用来加相关性分。
+- `classify` 的打分是手写公式，阈值 0.3 是拍出来的。
+- 评测集和对照实验每组只有 3–12 个样本，只能当冒烟测试看，不能作为结论。
 
-## 已知限制
+## 许可证
 
-1. 中文理解以组合槽位规则 + 可学习的说法/语义/构式映射为基础（见 6B–6H 章节）；
-   任意长难句、否定/条件全语义、多跳开放问答仍会诚实返回未解析或缺口。
-2. 证据独立性是启发式，不是语义理解：`content_hash` 识别逐字复制，
-   excerpt Jaccard（≥0.85）识别轻度改写；改写充分的同源文本、同一事实的
-   多手转述会被误判为独立——上限已在测试与文档中声明。相关性分级
-   （direct/indirect/unrelated）只是"是否提及目标+是否有 key 模式"的表面
-   检查。研究证据仅来自本地语料；证据不足时保持 `inconclusive`，
-   不写库、不升版本。写入需 ≥2 独立来源相同的短原子值（`policy.py`）。
-   审计前旧版本曾写入少量来源不明的 hypothesis 属性，历史数据未自动删除，
-   如需清理可先备份 `data/cognitive.db` 再 `rollback`。
-3. 属性值冲突默认保留双方 + 标记 `contested`，不自动覆盖 `verified`；
-   verified 只能经显式 `promote ... --confirmed-by` 达成。
-4. 神经网络、在线搜索尚未实现（见 AGENTS.md）。
-5. `claims`/`evidences`/`questions` 记录不在概念快照内，回滚恢复概念结构，
-   但保留冲突与研究的历史记录（有意为之：历史不可篡改）。
-
-## 评测与对照实验（Phase 2，复现命令）
-
-```powershell
-pytest tests/test_eval_concept_learning.py -q   # 10 案例评测集（tests/eval_data/）
-pytest tests/test_transfer_experiment.py -q -s  # A/B/C 对照（-s 显示对照表）
-pytest tests/test_lifecycle.py tests/test_evidence_independence.py tests/test_migration.py -q
-```
-
-评测基线结果（隔离库，`pytest -s` 可见明细表）：
-`EVAL accuracy=1.00, false_writes=0, abstention=3/3, unknown_detection=yes`；
-对照实验 A/B/C 在 5 个 held-out 测试上同得 5/5，仅 C 通过验证式拆分
-额外获得子组 bonus——结构学习带来可验证的迁移增益，但基础分类无差异
-（诚实结论：小规模评测上动态结构不总是最优）。
-
-## 神经网络（Phase 3A：概念识别网，CPU 可运行）
-
-`src/cognitive_ai/neural/`：字符级 CNN（默认）与双向 GRU，随机初始化，
-无预训练权重、无外部词向量。torch 为可选依赖（`pip install -e ".[neural]"`），
-缺失时规则系统不受影响。
-
-```powershell
-py -m cognitive_ai.cli neural-train --model cnn --tag cnn-v1 --seed 7 --epochs 300
-py -m cognitive_ai.cli neural-eval --tag cnn-v1
-py -m cognitive_ai.cli neural-compare --tags cnn-v1,gru-v1
-py -m cognitive_ai.cli neural-predict 杯子 --tag cnn-v1
-pytest tests/test_neural.py tests/test_neural_continual.py -q
-```
-
-实测（`data/neural/` 手工种子数据：train 174 / val 54 / test 77，
-组级隔离零泄漏；权重在 `models/`，git 忽略）：
-
-| 模型 | val L1 | test L1 | test L2 | test 基线 | 未知拒绝率 |
-|---|---|---|---|---|---|
-| char-CNN | 0.574 | **0.420** | 0.261 | 0.435 | 0.75 |
-| char-GRU | 0.556 | 0.391 | 0.275 | 0.435 | 0.00 |
-
-诚实结论：小数据+测试词完全未见的设定下，CNN 与粗糙关键词基线
-基本打平（差 1 个样本），GRU 更差且过度自信（拒绝率 0）。
-CNN 的价值在于校准的弃权（0.75）而非精度；L2 尚弱。
-网络输出恒为 `candidate`，经证据+生命周期门后才能入库，
-`neural-predict --submit` 只建 Claim，不断言知识、不升版本。
-3B 预留：`continual.py`（未知日志/样本检疫/版本化并入/回放门禁），
-无在线权重更新。
-
-能力边界：数百汉字词汇、短句、人工分布；未见词多靠共享单字猜测，
-常过度自信；不得称为通用中文理解。
-
-## 持续学习（Phase 3B：门禁式模型更新，CPU 可运行）
-
-未知输入→隔离队列→人工审核→增量训练（新样本+旧回放）→冻结回归门禁→
-指针切换（active.json），失败保留现状、可回滚。`models/` 不入库。
-
-```powershell
-py -m cognitive_ai.cli neural-cycle 激光打印机
-py -m cognitive_ai.cli neural-queue --status pending
-py -m cognitive_ai.cli neural-review <id> --l1 entity --l2 electronics --accept
-py -m cognitive_ai.cli neural-incremental --base cnn-v1 --out cnn-cand1 --epochs 30
-py -m cognitive_ai.cli neural-queue-export --out reviewed.jsonl
-py -m cognitive_ai.cli neural-gate --base cnn-v1 --candidate cnn-cand1 --new reviewed.jsonl --promote
-py -m cognitive_ai.cli neural-active
-py -m cognitive_ai.cli neural-rollback
-pytest tests/test_neural_3b.py tests/test_neural_transfer3b.py tests/test_neural_continual.py -q
-```
-
-真实运行（5 个审核新词 + 10 条回放，30/100 epoch 两候选）：
-门禁均**拒绝晋升**——回归 0.574→0.463/0.444（超 0.02 容忍度），
-新词准确率仅 0.2/0.6。活动模型保持 `cnn-v1`。
-结论：小批量回放不足以在吸收新词的同时保住旧知识，门禁按设计拦下；
-对照实验（全量回放）显示 replay 版旧知识保持 0.917 优于纯新样本版 0.75。
-A/B/C/D 小实验：A(冻)新0.33/旧0.58，B(新)C(新+回放)D(重训)新词皆0.67，
-旧知识 C 0.917 > D 0.833 > B 0.75——回放有效，但样本量小，属初步信号。
-
-## 交互教学（Phase 4A：`chat` 多轮教学，UTF-8）
-
-```powershell
-py -m cognitive_ai.cli chat
-```
-
-首屏显示知识版本与活动模型；中文快捷（帮助/概念/查看/分类/教/
-观察/标签/假设/纠正/探索/状态/队列/审核/经历/历史/模型/退出）与英文
-命令等效。`教 <名称>` 分步要属性→功能→类别（可跳过，未知保持未知）；
-`观察/标签/假设/纠正/探索` 五种操作分别落 observation/审核/Claim/
-留痕纠正/研究队列，互不替代；不可解析输入明确拒绝且**零写入**；
-`分类` 同时给出规则解析、KB 匹配、模型候选、未知判断与缺口。
-教学演示：教紫砂壶（属性→功能→类别）→`状态`可见暂定概念与缺口；
-`纠正` 保留原值；`neural-*` 训练/门禁命令复用原有接口（chat 内不直训）。
-`COGNITIVE_AI_DATA` 可指向隔离数据目录（测试即用此隔离）。
-
-限制：只懂帮助列出的命令与三种简单句式（X是Y/X有Y/X可以Z）；
-自由中文闲聊、指代消解、跨轮指代均不支持；类别名按 id/名称双查，
-未知归属永不虚构；单字/全未知串判 unjudgeable。
-
-## 组合式中文理解（Phase 4B：语义帧 + 上下文 + 意图网，CPU 可运行）
-
-```powershell
-py -m cognitive_ai.cli neural-intent-train --tag intent-v1
-py -m cognitive_ai.cli neural-intent-eval --tag intent-v1
-pytest tests/test_semantics.py -q
-```
-
-`semantics.py`：槽位组合规则（词法 markers + 通用槽 `{NP}是{NP}` 等，
-非整句硬编码）输出统一帧
-（intent/entities/predicates/modality/scope/source/confidence/
-unresolved/ambiguities）；否定用结构前瞻（不锈钢/不同不误伤）、
-hedge 提升后做槽匹配、纠正去嵌套、条件逗号兜底、量词清理。
-`chat` 内 `理解 <句>` 显示帧与将执行操作，`确认` 执行（未消解指代
-拒绝执行，曾抓到真 bug：代词成概念）；`纠正` 关联会话 last_observation；
-代词按会话上下文消解（多候选必问）；上下文落库可看可清，会话隔离。
-空属性归类恒 novel 已修：无属性/无冲突判 insufficient，无匹配有冲突
-才判 novel（缺属性≠新类别）。
-冻结 test 对比：规则 47/47=1.0，意图网 0.745（negate 0.375、
-unknown 0.0——无 unknown 训练样本，恒强制已知意图；职责分离的代价，
-如实报告）。
-
-## 开放世界发现（Phase 3C：未知检测 + 候选概念，CPU 可运行）
-
-```powershell
-py -m cognitive_ai.cli neural-ood 跑步机 --second gru-v1
-py -m cognitive_ai.cli neural-discover --tag cnn-v1
-pytest tests/test_neural_3c.py tests/test_neural_discovery_xfer.py -q
-```
-
-未知检测（原型由 train 定、阈值由 VAL 定，TEST 只报告）：
- verdict 分布（69 有标）similar 24 / confident 20 / unjudgeable 21 /
- novel 2 / uncertain 2；接受精度 12/20=0.60（裸模型 29/69=0.42，
- 以覆盖 29% 为代价将错误率减半）；未知 FAR 1/8（激光打印机两网一致
- 误判 entity——诚实失败）；校准温度 T=2.3 降 NLL 但 ECE 0.170→0.194
- 未改善，故 verdict 用原始概率（VAL 上二者接受精度相当）。
- 漏网：跑步机/花钱/跳舞两网一致误判；代价：自行车等可知词被连带弃权。
-候选发现：审核样本满足内聚+同族 L2 全清+LOO≥0.75 才提 new_l2，
- 否则 insufficient；L1 新类只存候选、永不自动扩展。
-结构对照（held-out 铁锅/12 冻结旧例，同预算）：
- A 只检测（铁锅 unjudgeable，旧 0.583），B 只加事实（L1 entity，旧 0.917），
- C 验证后扩展（L2=kitchenware 命中，旧 0.917，门禁 delta +0.33）——
- 小样本上的真实迁移增益；若验证失败 C 自动退回 base（已测试）。
-
-## 通用认知执行（Phase 4C：任务→操作→轨迹→答案，CPU 可运行）
-
-```powershell
-py -m cognitive_ai.cli chat
-# 解题 计算3+4*2 / 解题 杯子的材质是什么 / 解题 如果下雨地面就会湿。已知下雨。
-pytest tests/test_cogexec.py -q
-```
-
-`CognitiveTask`（已知/目标/可用知识/操作/未决/验证标准）→9 种内部
-操作（检索/查属性/用规则/比解释/计算/写工作记忆/检查/提缺口/改计划，
-全部记录输入·依据·输出·状态）→执行循环（验证→改计划/答/转缺口）→
-`explainer` 只按轨迹生成答案（未验证不出确定结论）。
-自研符号引擎：精确有理数算术、一元一次方程（回代验证）、多项式求导
-（幂/和/积规则逐项记录，独立复算验证），禁 `eval`、无外部求解器。
-三域同流程：数学（3+4*2=11、2x+3=7、x^3+2x 未见组合）、概念
-（verified/继承/hypothesis/unknown 四态区分，实例覆盖阻止盲继承）、
-逻辑（前提具备则推出、前提缺失/ contested 则拒断+缺口）。
-12 项验收全过；失败转 curiosity 缺口、神经权重零触碰、轨迹跨重启可查。
-人工规则与网络能力：操作 origin 明确标记 hand_rule；神经网络未参与
-解题推理（只做分类候选），如实区分、不混为一谈。
-
-## 可学习的认知技能（Phase 4D：归纳→验证→组合，CPU 可运行）
-
-```powershell
-py -m cognitive_ai.cli rule-induce --train ex.jsonl --domain math --name double --save
-py -m cognitive_ai.cli rule-validate lr_double --train ex.jsonl --heldout ho.jsonl --activate
-py -m cognitive_ai.cli rule-list
-pytest tests/test_rulelearn.py -q
-```
-
-`LearnableRule` 结构化存 DB（`learnable_rules` 表）：slot/transform 两族
-受限 DSL（bind/check/compute/emit，禁 eval，无代码生成）；归纳器只拟合
-参数式（仿射精确拟合、mod 分类需每剩余类≥2 例防记忆、合取贪心覆盖），
-歧义多候选必须 `rule-select` 人工选择，晋升要独立验证（训练 100% +
-held-out≥0.75 + 反例全拒 + 非法输入安全）+ 版本/回滚；重复验证与重复
-激活是显式幂等（只刷新报告，不 bump 版本、不改历史）；执行器经
-`ApplyLearnedRule`（origin=induced_rule，调用计数）实际调用，支持链式
-组合（_prev 传递，轨迹记录）；seed 规则经 `apply_rule(*)` 接入概念流程。
-实验：A 双规则组合解未见输入（6→13、9→19）；B 反例否决过宽规则；
-C 奇偶迁移新实例；D 未见组合。`学规则` 聊天分步收集示例→候选（不自动晋升）。
-能力归属：人工操作（operations/reasoner/mathengine/seed 规则）/用户监督
-（示例与选择）/系统归纳（候选+验证报告）/独立验证能力（held-out 通过项）
-四者分离记录（experiences outcome 字段）。
-
-## 本地认知工作台（Phase 5A：浏览器 UI，127.0.0.1:8765）
-
-```powershell
-py -m pip install -e ".[ui]"
-py -m cognitive_ai.cli ui
-# 打开 http://127.0.0.1:8765/ ；端口占用会明确报错；只绑本地回环
-```
-
-8 页：对话与解题（语义帧/任务/轨迹/验证/答案全展示）/教授知识
-（预览→确认，假设永不直写 verified）/规则实验室（示例→反例→验证→
-选择→激活→调用计数，全走 rulelearn 真流程）/概念网络（搜索/详情/
-版本）/待审队列/自主探索（限步）/认知历史（经历/版本/任务轨迹）/
-模型与状态（活动模型/候选/门禁说明，无直接激活通道）。
-顶栏显示活动模型、知识版本、服务与最近任务状态。
-演示（隔离库，真 HTTP）：提问得答案11→教学紫砂壶→归纳 double→
-验证通过激活 v3→历史/任务/探索均可见。测试 14 项全过（含中文多轮、
-会话隔离、参数校验、重开持久化）。
-
-## 类比迁移（Phase 5B：结构匹配→角色映射→前置检查→验证执行）
-
-```powershell
-pytest tests/test_analogy.py tests/test_analogy_xfer.py -q
-```
-
-`analogy.py` 把已验证轨迹降维为类型化签名（目标/操作链/规则链/槽角色，
-名称只展示不参与匹配；另计表面分做对照）；`retrieve` 按结构排序，
-`compose_for_goal` 拼接多案例规则链覆盖新目标链（覆盖不全拒绝）；
-`solve_task_with_analogy` 精确覆盖→组合→平局拒绝→守卫迁移，全程落轨迹；
-纠正经 `analogy_feedback` 影响后续排序（boost/penalize 透明可查）。
-对照（5 冻结任务）：A 直接执行 2/2 但链缺失目标首配错答（已验证的错，
-记录在案）；B 表面检索 0/2（29≠even 等错误迁移）；C 2/2 + t3/t4/t5
-正确拒绝；旧任务无退化。UI 新增类比视图（来源/映射/检查/结果）与
-纠正接口；侧边栏字体改黑（`#side button{color:#111}`）。
-诚实边界：签名粒度粗（操作骨架相同即难分），阈值 0.5 启发式；
-两网一致误判类比拦不住；小样本结论勿外推。
-
-## 独立验证与元认知（Phase 5C：验后定级 + 预算控制）
-
-```powershell
-pytest tests/test_verify.py tests/test_metacog.py -q
-```
-
-审计发现 op 级 verified（跑通）被直接冒充任务级正确；另 chain=None
-首配命中恒 verified（t5 输出 even 错误仍 verified，已立永久回归测试）。
-修复：`verify.py` 独立重推（数学重算/规则重跑/KB 重查/绑定一致/
-冲突检查）分 verified|inconclusive|rejected；未指定链恒 unverified；
-`metacog.py` 按执行记录决策（重试/换规则/类比/追问/缺口/拒绝），
-同因重复直接拒绝，预算耗尽收敛；所有完成轨迹验后定级，
-`explainer.provenance` 记录答案血缘。
-A/B/C（5 冻结任务）：A 2/2 + 3 诚实失败 0 错误verified；
-B 0/2 + 2 错误verified（表面移植无检查）；C 2/2 + 3 正确拒绝 0 错误；
-旧任务无退化。未覆盖场景：目标本身含糊时的确证标准、跨领域类比、
-长链组合的中间验证——仍可能 inconclusive，这是诚实上限。
-
-## 开放式学习闭环（Phase 6A：微世界 + 词典学习 + 决策表）
-
-硬限制审计（固定协议 vs 可学习项，详见各模块文档字符串）：
-解析器槽模式/意图10类/归纳器3+1提案器/DSL无循环无字符串操作/
-12种认知操作/规划器分支/模板答案生成——属固定安全与执行协议；
-词典映射、规则内容、候选选择、阈值之外的知识技能均可学。
-`world.py` 微世界（冰/水/壶 × 加热/冷却，6 条转移各 3 次独立观察）：
-学习前结构化问答弃权，学习后 6 规则激活，二步组合预测未见序列，
-新对象按状态迁移，反例否决过宽规则，单例证据永不晋升。
-评测：`pytest tests/test_micro_world.py tests/test_nlu_generalize.py -q`；
-规则 47/47=1.0、意图网 0.745 的对比不变；旧套件即回归。
-限制：单属性合取/有序决策表之外无新表示；NL→槽桥接仍手动；
-一两个示例只能到 hypothesis；小样本结论勿外推。
-
-## 下一阶段计划
-
-1. 更严格的研究证据门槛：同一结论需两个独立来源才进入知识库。
-2. 规则学习：从稳定的属性共现中提议新规则（走提案+回归验证）。
-3. 类别拆分/合并的自动触发条件（基于持续的反例计数，而非单次观察）。
-4. 神经网络模块（随机初始化，独立 `C` 类学习评估，与规则引擎对比测试）。
-5. `ResearchProvider` 的只读本地网页镜像源（仍不伪造结果、无密钥可运行）。
-
-## 统一对话与可学习语义（Phase 6B–6F：对话编排 + 表达学习）
-
-```powershell
-pytest tests/test_dialog_6b.py tests/test_web_dialog_6b.py tests/test_phrase_6c.py tests/test_phrase_generalize_6c.py tests/test_web_phrase_6c.py tests/test_discern_6d.py tests/test_eval_6d.py tests/test_webui.py -q
-```
-
-- 6B：组合式疑问模板（用途/材质/原因问式）+ 统一对话编排器 `dialog.process()`（寒暄/追问/命令/问答/教学预览/未知），数学题经共享 `_detect_math` 路由到现有求解器；`/api/chat` 与 `/api/solve` 同栈。
-- 6C：可学习的说法改写（示例→候选→留存验证→显式激活），单例只做字面映射；对照实验未见表达 0/4→4/4。
-- 6D：语义判别 `resolve_question`（用途/材质/存在性/是非/原因分流）+ A-not-A 验证问答（已验证的"不是"仍是已验证答案）+ 冲突相关性（无关冲突不阻断数学/异属性查询）+ 澄清路由。
-- 6E：直接语义帧学习 `semlearn.py`（逐字段构帧，不改写重解析）+ 三元组对照（用途/材质/存在性互不混淆，误标拒收并注记原因）。
-- 6F：对比验证门（标签—词表一致＋交叉沉默）与误标拒绝率实验。
-- 限制：疑问模板与意图类仍固定；原因问题无因果模型（诚实弃权）；小样本结论勿外推。
-
-## 多轮对话与自然定义教学（Phase 6G：上下文 + 概念学习）
-
-```powershell
-pytest tests/test_conversation_6d.py tests/test_define_6g.py tests/test_conflict_scope_6d.py -q
-```
-
-- 会话级话题/指代/省略/切换/恢复（`dialogue_context` + `pending_*`，会话隔离，重启丢临时态）。
-- 自然定义教学：`我定义了一种叫X的…` 分句解析→候选→确认/取消/序号修正→原子化保存（能力各为独立 Claim + `function`/`function#N` 行，条件文本保留并注记 schema 限制），一律 hypothesis。
-- 限制：条件无完整语义；多值拼单键之外需索引键；复杂省略仍 unknown。
-
-## 统一认知循环与多步推理（Phase 6H：控制器 + 证明链）
-
-```powershell
-pytest tests/test_cycle_6h1.py tests/test_cycle_control_6h1a.py tests/test_construction_6h2b.py tests/test_verbalize_6h2a.py tests/test_cxauto_6h2c.py tests/test_chainreason_6h3a.py -q
-```
-
-- 6H-1：`cognitive_cycle.py` 为普通请求的唯一控制者（构建→执行→验证→决策→渲染，answer/clarification/abstention/failure 四态，可恢复澄清，每循环单条经验）；`executor.solve_text` 为兼容委托入口，不再自带控制循环。
-- 6H-2：双向构式（解析与生成读同一激活行，候选→留存双向验证→显式激活）+ 对话自动发现（确认对→聚类→候选→留存验证，3/2/2 门槛自动激活并审计）+ 组合表达生成（学习面＋固定规范面，角色回查）。
-- 6H-3A：变量绑定多步证明链 `chainreason.py`（深度≤4、访问去重、最弱状态传播、冲突集、无 KB 写入）+ `ChainInfer` 可选操作 + 验证器逐步重查。
-- 限制：规则表无状态列；relations 无生命周期列；NL 无法命名测试专用键；长链/跨域类比仍可能 inconclusive。
+MPL-2.0，见 [LICENSE](LICENSE)。

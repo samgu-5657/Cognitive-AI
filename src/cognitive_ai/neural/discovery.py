@@ -1,4 +1,4 @@
-"""Candidate concept discovery (Phase 3C, Task 3).
+"""Candidate concept discovery.
 
 Operates on REVIEWED samples (human labels) + real model features.
 Never on bare network predictions, never on name similarity.

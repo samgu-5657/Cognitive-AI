@@ -33,17 +33,6 @@ NEAR_DUPLICATE_SIMILARITY = 0.85
 # conflicts exist); below it the observation is reported as novel.
 CLASSIFY_MATCH_THRESHOLD = 0.3
 
-# Analogy acceptance bar: the MAJORITY of typed structure must align
-# (goal kind + type + ordered op chain + slot keys). Tunable central
-# policy, exercised on both sides by tests (accept above, refuse below).
-ANALOGY_STRUCT_MIN = 0.5
-
-# Multi-step factual chaining (chainreason.py): max proof depth and max
-# proofs collected per query. Depth bounds termination outright; the
-# visited-state check additionally prunes equivalent paths.
-MAX_CHAIN_DEPTH = 4
-MAX_CHAIN_PROOFS = 12
-
 # Upper bound on genuinely NEW questions persisted per generate() call.
 MAX_NEW_QUESTIONS_PER_STEP = 10
 
