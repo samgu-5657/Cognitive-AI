@@ -56,6 +56,7 @@ def l2p():
     }
 
 
+@NEED_TORCH
 def test_zero_evidence_inputs_are_unjudgeable():
     from cognitive_ai.neural.ood import assess
     import torch
@@ -80,6 +81,7 @@ def test_zero_evidence_inputs_are_unjudgeable():
         assert r["verdict"] == "unjudgeable", (t, r)
 
 
+@NEED_TORCH
 def test_margin_and_distance_paths():
     from cognitive_ai.neural.ood import assess
     import torch
@@ -110,6 +112,7 @@ def test_margin_and_distance_paths():
     assert r2["verdict"] == "known_confident", r2
 
 
+@NEED_TORCH
 def test_ensemble_veto_with_second_model():
     from cognitive_ai.neural.ood import assess
     import torch
@@ -140,6 +143,7 @@ def test_ensemble_veto_with_second_model():
     assert any("ensemble" in s for s in r["reasons"])
 
 
+@NEED_TORCH
 def test_discovery_cohesive_proposes_insufficient_declines():
     from cognitive_ai.neural.discovery import discover, validate_proposal
     dim = 4
@@ -167,6 +171,7 @@ def test_discovery_cohesive_proposes_insufficient_declines():
                                         "insufficient_evidence"), rep4
 
 
+@NEED_TORCH
 def test_l1_new_is_candidate_only():
     from cognitive_ai.neural.discovery import discover, to_schema_payload
     dim = 4

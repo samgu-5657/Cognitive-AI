@@ -133,7 +133,7 @@ class Learner:
             result["updated_concept"] = {"id": cid, "added": added}
         # evaluate: did conflicts grow?
         result["conflicts"] = self.reasoner.check_conflicts()
-        # outcome bookkeeping (Phase 6A Task 8): fact vs concept learned
+        # outcome bookkeeping: fact vs concept learned
         result["outcome"] = "concept" if result.get("new_concept") else "fact"
         self.mem.add_experience("evaluation",
                                 f"learned from {name}",
@@ -156,8 +156,6 @@ class Learner:
           on the same cleaned value before any add_attribute proposal;
         - promoted values are always `hypothesis`, never `verified`.
         """
-        import re
-        import time
         q = self.mem.query_one("SELECT * FROM questions WHERE id=?", (qid,))
         if q is None:
             return {"ok": False, "error": "question not found",
@@ -360,8 +358,6 @@ class Learner:
                     "observation": obs.get("name"),
                     "threshold": CLASSIFY_MATCH_THRESHOLD,
                     "reason": "no attributes to compare"}
-        from .policy import CLASSIFY_MATCH_THRESHOLD
-        attrs: dict = obs.get("attributes", {}) or {}
         scored = []
         for c in self.mem.list_concepts():
             inh = self.onto.inherited_attributes(c["id"])
@@ -455,10 +451,6 @@ class Learner:
                         evidence=[{"key": k, "distribution": by_value}])
                     report.append({"parent": parent, "key": k, **res})
                     break  # one split per parent per pass; re-run to go deeper
-        self.mem.add_experience("evaluation",
-                                f"consolidation: {len(report)} proposal(s)",
-                                {"report": _jsonable(report)})
-        return {"ok": True, "proposals": report}
         self.mem.add_experience("evaluation",
                                 f"consolidation: {len(report)} proposal(s)",
                                 {"report": _jsonable(report)})

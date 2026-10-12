@@ -1,4 +1,4 @@
-"""Unknown-sample quarantine queue (Phase 3B).
+"""Unknown-sample quarantine queue.
 
 Layout: one JSON object per line in a queue file (default
 `data/neural/queue/unknown.jsonl`, git-ignored runtime state).

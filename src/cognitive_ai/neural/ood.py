@@ -1,7 +1,9 @@
-"""Open-world unknown detection (Phase 3C, Task 2).
+"""Open-world unknown detection.
 
 Signals (all from REAL model outputs, never hardcoded words):
-  maxprob   - calibrated top-1 probability (temperature scaling fit on VAL);
+  maxprob   - top-1 probability. A temperature is fit on VAL, but the CLI
+              passes T=1.0 (raw probabilities): the fit lowered NLL without
+              improving ECE or accept-precision, so it is diagnostic only;
   margin    - top1 minus top2 probability;
   dist      - Euclidean distance to the nearest L1 class prototype
               (mean penultimate feature of correctly-classified TRAIN rows);

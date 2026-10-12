@@ -6,7 +6,7 @@ Major (high-impact) changes require validation before applying.
 """
 from __future__ import annotations
 
-from typing import Any, Callable, Optional
+from typing import Callable, Optional
 
 from .memory import Memory
 from .ontology import Ontology

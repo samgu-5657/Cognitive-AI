@@ -1,13 +1,12 @@
 [project]
 name = "cognitive-ai"
 version = "0.1.0"
-description = "Cognitive AI - continuously learning artificial cognitive system (Phase 1 prototype)"
+description = "Rule-based concept knowledge base with evidence-gated learning and an optional character-level CNN classifier"
 requires-python = ">=3.12"
 
 [project.optional-dependencies]
 test = ["pytest>=8"]
 neural = ["torch>=2"]
-ui = ["fastapi>=0.100", "uvicorn>=0.20"]
 
 [build-system]
 requires = ["setuptools>=61"]

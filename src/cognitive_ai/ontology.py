@@ -1,7 +1,6 @@
 """Concept system: CRUD, multiple inheritance, cycle detection, inheritance queries."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from typing import Any, Optional
 
 from .memory import Memory

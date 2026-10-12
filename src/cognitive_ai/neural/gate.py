@@ -1,4 +1,4 @@
-"""Promotion gate for candidate checkpoints (Phase 3B).
+"""Promotion gate for candidate checkpoints.
 
 Pipeline: candidate dir (from incremental_train) -> evaluate on the FROZEN
 regression set (same rows for base and candidate) + new-sample set ->

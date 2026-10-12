@@ -28,8 +28,6 @@ satisfy the conditions above and are recorded in lifecycle_events.
 """
 from __future__ import annotations
 
-import json
-from typing import Any, Optional
 
 from .memory import Memory
 from .policy import MIN_CORROBORATING_SOURCES, SUPPORTED_MIN_SOURCES
