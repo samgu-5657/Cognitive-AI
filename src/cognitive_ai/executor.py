@@ -105,6 +105,11 @@ def _make_plan(task: CognitiveTask) -> list[dict]:
         plan.append({"op": "apply_learned",
                      "inputs": {"domain": "concepts", "from_attrs": True},
                      "optional": True})
+        # multi-step chaining (Phase 6H-3A): optional like the other rule
+        # steps, so a miss never kills the task; hits add cited proofs.
+        plan.append({"op": "chain_infer",
+                     "inputs": {"concept": "__each__", "key": "__ask__"},
+                     "optional": True})
     plan.append({"op": "check_result",
                  "inputs": {"check": {"kind": "kb_source",
                                       "sources": ents}}})
@@ -147,13 +152,19 @@ def _run_plan(task, plan, ctx, trace) -> bool:
         if step["op"] == "query_attribute" and \
                 inputs.get("concept") == "__each__":
             if not _run_attr_queries(task, ctx, trace):
-                return False
-            # A-not-A verification claims (Phase 6D): compare the
+                return False            # A-not-A verification claims (Phase 6D): compare the
             # retrieved value against the asked one. Runs once, right
             # after the attribute reads it depends on.
             if (task.goal or {}).get("verify"):
                 if not _run_verify(task, ctx, trace):
                     return False
+            continue
+        if step["op"] == "chain_infer" and \
+                inputs.get("concept") == "__each__":
+            # optional multi-step chaining: misses never fail the plan
+            # (the miss itself stays in the trace for audit).
+            _run_chain_queries(task, ctx, trace,
+                               inputs.get("key") == "__ask__")
             continue
         if step["op"] == "apply_learned" and inputs.get("from_attrs"):
             # feed retrieved attribute values as rule input slots
@@ -202,9 +213,12 @@ def _run_plan(task, plan, ctx, trace) -> bool:
                 continue
             return False
         if rec["status"] == "unverified" and step["op"] != "check_result":
-            # unverified intermediate: keep going only for retrieval steps
+            # unverified intermediate: keep going for retrieval steps
+            # and for chaining (hypothesis proofs are reported, never
+            # asserted; the final check still decides the task).
             if step["op"] not in ("retrieve_concepts", "query_attribute",
-                                  "apply_rule", "compare_explanations"):
+                                  "apply_rule", "compare_explanations"
+                                  "chain_infer"):
                 return False
     # task-level acceptance: math-compute needs a verified compute;
     # transform plans accept on verified checks; conceptual and logic
@@ -322,6 +336,32 @@ def _norm_value(v):
         return v
     s = str(v).strip().lower()
     return _VERIFY_ALIASES.get(s, s)
+
+
+def _run_chain_queries(task, ctx, trace, use_ask: bool = True) -> bool:
+    """Optional chaining reads for each resolved entity (Phase 6H-3A).
+
+    Always returns True: a miss is recorded in the trace for audit and
+    skipped by the optional-step logic, exactly like the other rule
+    steps. Only runs when a question key is known.
+    """
+    from .operations import ChainInfer
+    text = task.input_text
+    key = ((task.goal or {}).get("ask_key") or _wanted_key(text)) \
+        if use_ask else None
+    for ent, (cid, ekey) in zip(task.goal.get("entities", []),
+                                _resolve_entities(task, ctx)):
+        if ent.strip() in ("什么", "谁", "哪个", "多少", "为什么", "是否",
+                           "吗", "呢", ""):
+            continue  # interrogative word, not a knowledge term
+        if not cid:
+            continue  # unknown concepts already failed upstream
+        k = ekey or key
+        if not k:
+            continue  # no key to prove: chaining stays out of the way
+        rec = ChainInfer().run({"concept": cid, "key": k}, ctx)
+        trace["steps"].append(rec)
+    return True
 
 
 def _run_verify(task, ctx, trace) -> bool:
@@ -450,6 +490,8 @@ def _classify_failure(task, last: dict) -> str:
              or "unknown concept" in note):
         return "missing_concept"
     if op == "apply_rule":
+        return "missing_rule"
+    if op == "chain_infer":
         return "missing_rule"
     if op == "unknown_op":
         return "wrong_op"

@@ -68,7 +68,9 @@ def _explain_conceptual(trace, style) -> dict:
                and s.get("status") == "verified"]
     rules = [s for s in trace["steps"] if s.get("op") == "apply_rule"
              and s.get("status") == "verified"]
-    if not attrs and not learned:
+    chained = [s for s in trace["steps"] if s.get("op") == "chain_infer"
+               and s.get("status") == "verified"]
+    if not attrs and not learned and not chained:
         return {"text": "没有查到相关知识,无法回答。",
                 "certainty": "unknown", "citations": []}
     lines, cites, certain = [], [], True
@@ -142,6 +144,26 @@ def _explain_conceptual(trace, style) -> dict:
         for f in s.get("outputs", {}).get("fired", []):
             lines.append(f"已验证规则{f.get('rule')}给出:{f.get('conclusion')}")
             cites.append(_cite(s))
+    for s in chained:
+        for proof in (s.get("outputs", {}) or {}).get("proofs", []):
+            chain = ">".join(
+                [proof.get("rule_id", "kb")] +
+                [p.get("rule_id", "kb")
+                 for p in proof.get("premises", []) or []])
+            val = proof.get("value", "")
+            st = proof.get("status", "unknown")
+            cites.append(_cite(s))
+            if st == "verified":
+                lines.append(f"多步推导[{chain}]得出:{val}(已验证,有证明链)")
+            elif st == "inherited(verified)":
+                lines.append(f"多步推导[{chain}]得出:{val}(继承依据,非直接验证)")
+                certain = False
+            elif st == "hypothesis":
+                lines.append(f"多步推导[{chain}]可能得出:{val}(暂定假设,未验证)")
+                certain = False
+            elif st == "contested":
+                lines.append(f"多步推导[{chain}]存在冲突,无确定结论。")
+                certain = False
     if text is None:
         if style == "short" and lines:
             text = vlines[0] if vlines else lines[0]

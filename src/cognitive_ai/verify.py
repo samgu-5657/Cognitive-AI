@@ -41,6 +41,7 @@ def verify_task(task: dict, trace_steps: list, memory, ontology=None) -> dict:
                        "detail": f"no verifier for goal kind {kind!r}"})
     checks.append(_check_rule_applicability(task, trace_steps, memory,
                                             ontology))
+    checks.append(_check_chain_proofs(trace_steps, memory, ontology))
     checks.append(_check_binding_consistency(trace_steps))
     checks.append(_check_kb_conflicts(task, trace_steps, memory, ontology))
     verdict = "verified"
@@ -258,6 +259,29 @@ def _check_rule_applicability(task, steps, memory, ontology) -> dict:
             "detail": f"{used} application(s) on active rules"}
 
 
+def _check_chain_proofs(steps, memory, ontology) -> dict:
+    # Phase 6H-3A: every recorded chain proof is re-derived from
+    # scratch (rule existence, exceptions, bindings, premises). One
+    # bad proof rejects the check; absent proofs pass trivially.
+    from . import chainreason as C
+    n = 0
+    for st in steps:
+        if st.get("op") != "chain_infer" or \
+                st.get("status") != "verified":
+            continue
+        for proof in (st.get("outputs", {}) or {}).get("proofs", []):
+            n += 1
+            rep = C.verify_proof(proof, memory, ontology)
+            if rep["result"] != "verified":
+                return {"name": "chain_proofs", "result": "rejected",
+                        "detail": f"proof rejected: {rep['detail']}"}
+    if n == 0:
+        return {"name": "chain_proofs", "result": "verified",
+                "detail": "no chain proofs to audit"}
+    return {"name": "chain_proofs", "result": "verified",
+            "detail": f"{n} proof(s) independently re-derived"}
+
+
 def _check_binding_consistency(steps) -> dict:
     # chain threading coherence: each chained rule after the first must
     # have consumed the previous output (_prev present in its trace)
@@ -293,7 +317,7 @@ def _check_kb_conflicts(task, steps, memory, ontology) -> dict:
     from .reasoner import Reasoner
     touched: set[tuple[str, str | None]] = set()
     for s in steps:
-        if s.get("op") == "query_attribute":
+        if s.get("op") in ("query_attribute", "chain_infer"):
             inp = s.get("inputs", {}) or {}
             if inp.get("concept"):
                 touched.add((inp["concept"], inp.get("key")))

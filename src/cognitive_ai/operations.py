@@ -383,6 +383,37 @@ class ApplyLearnedRule(Operation):
         return True, f"{len(outputs['applied'])} rule(s) applied"
 
 
+class ChainInfer(Operation):
+    name = "chain_infer"
+    # Multi-step variable-bound chaining (chainreason). Proves
+    # (concept, key) through DECLARED rules only and records every
+    # proof (premise ids, rule ids, bindings, intermediates). Writes
+    # nothing: conclusions live in the trace until the lifecycle
+    # promotes them. A miss raises (callers treat it as optional).
+
+    def execute(self, inputs, ctx):
+        from . import chainreason as C
+        mem, onto = ctx["memory"], ctx.get("ontology")
+        cid, key = inputs.get("concept"), inputs.get("key")
+        if not cid or not key:
+            raise OpError("chain_infer needs concept and key")
+        if mem.get_concept(cid) is None:
+            raise OpError(f"unknown concept {cid}")
+        out = C.prove_attribute(mem, onto, cid, key)
+        if out["status"] == "unknown" or not out["proofs"]:
+            raise OpError(f"no chain proof for {cid}.{key}")
+        return out
+
+    def validate(self, inputs, outputs, ctx):
+        if outputs.get("status") == "contested" or outputs.get(
+                "conflicts"):
+            return False, "conflicting proofs: no single conclusion"
+        if not outputs.get("proofs"):
+            return False, "no proofs recorded"
+        return True, f"{len(outputs['proofs'])} proof(s), " \
+            f"status={outputs.get('status')}"
+
+
 class Analogize(Operation):
     name = "analogize"
     origin = "hand_rule"  # the retrieval/mapping machinery is hand-written;
@@ -412,4 +443,4 @@ class Analogize(Operation):
 REGISTRY = {c.name: c for c in (
     RetrieveConcepts, QueryAttribute, ApplyRule, CompareExplanations,
     Compute, UpdateWorkingMemory, CheckResult, RaiseGap, Replan,
-    RetrieveRules, ApplyLearnedRule, Analogize)}
+    RetrieveRules, ApplyLearnedRule, Analogize, ChainInfer)}
