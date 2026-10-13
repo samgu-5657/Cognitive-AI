@@ -115,6 +115,18 @@ CREATE TABLE IF NOT EXISTS meta(
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+-- Phase M3C: not-yet-accepted learning candidates. Rows here are
+-- invisible to reasoning; only proposed/accepted/rejected bookkeeping.
+CREATE TABLE IF NOT EXISTS pending_candidates(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind TEXT NOT NULL DEFAULT '',
+  utterance TEXT NOT NULL DEFAULT '',
+  parse TEXT NOT NULL DEFAULT '{}',
+  observation TEXT NOT NULL DEFAULT '{}',
+  status TEXT NOT NULL DEFAULT 'proposed',
+  reason TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL
+);
 -- Phase 2: knowledge lifecycle history (additive; old DBs gain it on open)
 CREATE TABLE IF NOT EXISTS lifecycle_events(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -416,6 +428,35 @@ class Memory:
         return self.query(
             "SELECT * FROM experiences ORDER BY id DESC LIMIT ?", (limit,)
         )
+
+    # ---- pending learning candidates (Phase M3C) ----
+    def add_pending_candidate(self, kind: str, utterance: str,
+                              parse: dict, observation: dict,
+                              reason: str = "") -> int:
+        cur = self.execute(
+            "INSERT INTO pending_candidates(kind,utterance,parse,"
+            "observation,status,reason,created_at)"
+            " VALUES(?,?,?,?,?,?,?)",
+            (kind, utterance, json.dumps(parse, ensure_ascii=False),
+             json.dumps(observation, ensure_ascii=False), "proposed",
+             reason, _utcnow()))
+        return int(cur.lastrowid)
+
+    def get_pending_candidate(self, pid: int) -> Optional[dict]:
+        return self.query_one("SELECT * FROM pending_candidates WHERE id=?",
+                              (pid,))
+
+    def list_pending_candidates(self, status: Optional[str] = None) -> list[dict]:
+        if status:
+            return self.query("SELECT * FROM pending_candidates WHERE status=? "
+                              "ORDER BY id", (status,))
+        return self.query("SELECT * FROM pending_candidates ORDER BY id")
+
+    def set_pending_status(self, pid: int, status: str) -> None:
+        if status not in ("proposed", "accepted", "rejected"):
+            raise ValueError(f"unknown pending status: {status}")
+        self.execute("UPDATE pending_candidates SET status=? WHERE id=?",
+                     (status, pid))
 
     # ---- claims / evidences ----
     def add_claim(self, text: str, subject_id: Optional[str] = None,

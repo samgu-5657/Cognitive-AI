@@ -43,11 +43,15 @@ def ground_statement(text: str, mem: Memory) -> GroundingVerdict:
         out.verdict = "ambiguous"
         out.detail = "utterance ambiguous, no queries run"
         return out
-    if u.predicate == "unknown" or not u.subject_known:
-        out.detail = "no resolvable subject or predicate"
+    if u.predicate == "unknown":
+        out.detail = "no resolvable predicate"
         return out
-    subj = _resolve_concept(mem, u.subject)
+    subj = _resolve_concept(mem, u.subject) if u.subject_known else None
     if subj is None:
+        # unknown subject: still resolve the object so candidate
+        # building can see it, but run no subject-bound queries.
+        out.object_match = {"text": u.object,
+                            "concept_id": _resolve_concept(mem, u.object)}
         out.detail = f"subject not in KB: {u.subject}"
         return out
     out.subject_match = {"text": u.subject, "concept_id": subj}
@@ -96,9 +100,19 @@ def ground_statement(text: str, mem: Memory) -> GroundingVerdict:
         evidence.append(e)
     if core is None and any("supports" in e for e in evidence):
         core = True
-    # polarity last, never silently: denial of a supported core is a
-    # conflict; denial of a refuted core is supported; unknown stays.
-    if core is True:
+    # verdict follows the best supporting status, never upgrades it:
+    # contested-only support is a live dispute (conflicted), hypothesis
+    # stays visibly weak. Polarity applies last, never silently.
+    best = "unknown"
+    order = {"verified": 3, "inherited(verified)": 3, "hypothesis": 2,
+             "inherited(hypothesis)": 2, "contested": 1,
+             "inherited(contested)": 1}
+    for e in evidence:
+        if order.get(e.get("status", ""), 0) > order.get(best, 0):
+            best = e.get("status", "unknown")
+    if core is True and best in ("contested", "inherited(contested)"):
+        out.verdict = "supported" if u.negated else "conflicted"
+    elif core is True:
         out.verdict = "conflicted" if u.negated else "supported"
     elif core is False:
         out.verdict = "supported" if u.negated else "conflicted"

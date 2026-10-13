@@ -100,6 +100,51 @@ def cmd_observe(a):
     mem.close()
 
 
+def cmd_learn(a):
+    """Propose a learning candidate from one Chinese statement.
+
+    Writes exactly one pending_candidates row, nothing else."""
+    from cognitive_ai.learner import Learner
+    mem = get_memory()
+    try:
+        out = Learner(mem, CORPUS).propose_from_utterance(a.sentence)
+        print(json.dumps(out, ensure_ascii=False, indent=2, default=str))
+    finally:
+        mem.close()
+
+
+def cmd_confirm(a):
+    """Apply a proposed candidate through the existing gates."""
+    from cognitive_ai.learner import Learner
+    mem = get_memory()
+    try:
+        print(json.dumps(Learner(mem, CORPUS).confirm_candidate(a.id),
+                         ensure_ascii=False, indent=2, default=str))
+    finally:
+        mem.close()
+
+
+def cmd_reject(a):
+    """Drop a proposed candidate. Only its status flips."""
+    from cognitive_ai.learner import Learner
+    mem = get_memory()
+    try:
+        print(json.dumps(Learner(mem, CORPUS).reject_candidate(a.id),
+                         ensure_ascii=False, indent=2, default=str))
+    finally:
+        mem.close()
+
+
+def cmd_pending(a):
+    from cognitive_ai.learner import Learner
+    mem = get_memory()
+    try:
+        print(json.dumps(Learner(mem, CORPUS).list_pending_candidates(
+            a.status), ensure_ascii=False, indent=2, default=str))
+    finally:
+        mem.close()
+
+
 def cmd_parse(a):
     mem = get_memory()
     try:
@@ -540,6 +585,10 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("concepts").set_defaults(fn=cmd_concepts)
     s = sub.add_parser("inspect"); s.add_argument("id"); s.set_defaults(fn=cmd_inspect)
     s = sub.add_parser("observe"); s.add_argument("--json", default=None); s.add_argument("--json-file", default=None); s.set_defaults(fn=cmd_observe)
+    s = sub.add_parser("learn"); s.add_argument("sentence"); s.set_defaults(fn=cmd_learn)
+    s = sub.add_parser("confirm"); s.add_argument("id", type=int); s.set_defaults(fn=cmd_confirm)
+    s = sub.add_parser("reject"); s.add_argument("id", type=int); s.set_defaults(fn=cmd_reject)
+    s = sub.add_parser("pending"); s.add_argument("--status", default=None); s.set_defaults(fn=cmd_pending)
     s = sub.add_parser("parse"); s.add_argument("sentence"); s.set_defaults(fn=cmd_parse)
     s = sub.add_parser("understand"); s.add_argument("sentence"); s.set_defaults(fn=cmd_understand)
     s = sub.add_parser("query"); s.add_argument("--json", default=None); s.add_argument("--json-file", default=None); s.set_defaults(fn=cmd_query)

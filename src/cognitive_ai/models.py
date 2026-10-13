@@ -138,6 +138,28 @@ class ResearchQuestion:
 
 
 @dataclass
+class PendingCandidate:
+    """A not-yet-accepted learning candidate (Phase M3C).
+
+    Stored in the pending_candidates table with status proposed |
+    accepted | rejected. Pending rows are invisible to reasoning and
+    never count as accepted facts.
+    """
+
+    id: int = 0
+    kind: str = ""
+    utterance: str = ""
+    parse: dict = field(default_factory=dict)
+    observation: dict = field(default_factory=dict)
+    status: str = "proposed"
+    reason: str = ""
+    created_at: str = field(default_factory=utcnow)
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass
 class GroundingVerdict:
     """Read-only grounding of one utterance against the KB (Phase M3B).
 

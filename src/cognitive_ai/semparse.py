@@ -139,8 +139,36 @@ def parse_statement(text: str, mem: Memory) -> ParsedUtterance:
         out.unknown_spans.append(s)
         return out
     if subj_text is None:
-        out.unknown_spans.append(s)
-        return out
+        # unknown subject: try a marker-led split so X是Y / X有Y /
+        # X可以Z with a new X still yields a structured frame (the
+        # subject stays unknown and uncreated). Bare 不/没 are NOT
+        # splitters here: too easy to cut inside unknown words.
+        FB_MARKERS = ("是不是", "能不能", "有没有", "不是", "并非",
+                      "没有", "不能", "不会", "无法", "不可", "可以",
+                      "能够", "能", "是", "有")
+        hit = None
+        for mk in FB_MARKERS:
+            i = s.find(mk)
+            if i > 0 and (hit is None or i < hit[0]):
+                hit = (i, mk)
+        if hit is None:
+            out.unknown_spans.append(s)
+            return out
+        i, mk = hit
+        subj_text = s[:i].strip()
+        if not subj_text:
+            out.unknown_spans.append(s)
+            return out
+        out.subject = subj_text
+        out.subject_known = False
+        out.unknown_spans.append(subj_text)
+        out.spans["subject"] = subj_text
+        out.spans["subject_unresolved"] = True
+        rest = s[i:].strip()
+        if not rest:
+            out.ambiguity = "subject without predication"
+            return out
+        return _parse_predicate(out, mem, rest, s)
     out.subject, out.subject_known = subj_text, True
     out.spans["subject"] = subj_text
     rest = s[len(subj_text):].strip()
@@ -148,7 +176,12 @@ def parse_statement(text: str, mem: Memory) -> ParsedUtterance:
         out.ambiguity = "subject without predication"
         out.unknown_spans.append(s)
         return out
+    return _parse_predicate(out, mem, rest, s)
 
+
+def _parse_predicate(out: ParsedUtterance, mem: Memory, rest: str,
+                     s: str) -> ParsedUtterance:
+    """Shared predicate half: negation, modal, heads, object."""
     negated, neg_kind, rest = _split_negation(rest)
     out.negated = negated
     if neg_kind:
