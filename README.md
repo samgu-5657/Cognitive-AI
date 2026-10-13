@@ -149,34 +149,9 @@ python -m cognitive_ai.cli neural-discover --tag cnn-v1
 
 ## 保留信息：历史清理与暂未实现内容
 
-本栏集中保留在文档重构中不宜丢失的历史信息。2026-10-12 清理时移除了约 1.2 万行代码和 34 个测试文件；旧版本可在 git 历史 `6732730` 及之前的提交中查看。
+本栏集中保留在文档重构中不宜丢失的历史信息。2026-10-12 清理时移除了约 1.2 万行代码和 34 个测试文件；旧版本可在 branch `backup/old-str` 以及 tag `first-fix` 中查看。
 
-### 已移除的模块及原因
-
-| 移除内容 | 原来的说法 | 实际情况 |
-|---|---|---|
-| `interact.py`（chat REPL） | 交互教学 | 1300 多行的中文命令分发，把多个模块串在一起 |
-| `semantics.py`、`phraselearn.py`、`semlearn.py`、`constructions.py`、`verbalize.py`、`dialog.py` | 组合式中文理解、可学习语义、双向构式、多轮对话 | 正则槽位模板，以及从示例归纳的前缀 / 后缀字符串改写规则 |
-| `cognitive_cycle.py`、`metacog.py`、`executor.py`、`cogtask.py`、`cog_planners.py`、`operations.py`、`explainer.py`、`answers.py`、`verify.py` | 统一认知循环、元认知、独立验证 | 按正则把输入分到“数学 / 逻辑 / 概念”路径，再按失败原因字符串分支 |
-| `analogy.py` | 结构类比迁移 | 比较执行轨迹的目标类型、操作名序列和槽位键的重合度 |
-| `chainreason.py` | 多步证明链 | 可对带变量的规则做有深度上限的证明搜索，但只被已删除的执行器调用；现有种子规则也都是具体规则 |
-| `rulelearn.py`、`learnloop.py` | 可学习认知技能 | 从示例拟合受限 DSL 中的仿射、取模、单属性合取和决策表规则，用例是数值或玩具状态 |
-| `world.py` | 开放式学习闭环微世界 | 一张写死的 3 状态 × 2 动作转移表 |
-| `mathengine.py` | 自研符号引擎 | 四则运算、一元一次方程和多项式求导，与项目主题无关 |
-| `web/` | 本地认知工作台 | FastAPI + 原生前端，主要包裹已删除的模块 |
-| `neural/intent.py`、`data/semantics/` | 意图网 | 只服务于已删除的正则解析器，测试准确率 0.745，仍不如规则 |
-| `neural/continual.py` | 3B 预留 | 已由 `queue.py`、`gate.py` 和 `cycle.py` 取代，当前没有代码调用 |
-
-### 清理时修复的事项
-
-- 删除了 `learner.classify` 中重复的导入和赋值，以及 `consolidate` 末尾永远无法执行的代码。
-- 修正多个 neural CLI 命令，使其读取 `COGNITIVE_AI_MODELS`，不再写死 `ROOT/models`。
-- 增加 `neural-ood-build`，解决 OOD 文件此前没有生成命令的问题。
-- 将 `test_migration.py` 改为在测试中构造旧版数据库，不再依赖作者本机的 Windows 临时文件。
-- 为 `test_neural_3c.py` 中依赖 torch 的测试增加跳过标记，未安装 torch 时不会直接失败。
-- 修正与代码不符的注释：OOD 实际使用原始概率，评测基线是手写关键词表而不是“符号解析器”。
-
-### 只有接口或计划中的内容
+### 计划中的内容
 
 - `research.WebSearchProvider` 只有接口，调用会抛 `NotImplementedError`。
 - 计划将回归门改为基于种子数据和历史快照的通用检查。
