@@ -29,8 +29,9 @@ README 讲这个项目是什么，这里记录做到哪一步、实测结果怎�
 | 变量绑定多步规则推理（`?x` 合一、有界深度搜索、证明链、冲突报告，不写库） | `reasoner.py` | `test_chain_m1.py` |
 | 规则生命周期（active/candidate/validated/disabled/rejected，变更记事件）与关系行真实状态传播 | `memory.py`, `models.py`, `reasoner.py` | `test_rule_lifecycle_m2.py` |
 | 可组合中文语义解析（主体/谓词/对象/否定/能力模态，7 式切片） | `semparse.py`, `novelty.py` | `test_semparse_m3a.py` |
+| 只读语义接地（supported/conflicted/unknown/ambiguous + 证据） | `semground.py`, `models.py` | `test_semground_m3b.py` |
 
-全量测试：`pytest -q` → 装了 torch 时 107 passed（98 旧 + 9 新）；没装 torch 时 87 passed、20 skipped。
+全量测试：`pytest -q` → 装了 torch 时 119 passed（107 旧 + 12 新）；没装 torch 时 99 passed、20 skipped。
 
 ### 只有接口
 

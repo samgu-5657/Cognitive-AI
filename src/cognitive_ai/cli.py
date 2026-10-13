@@ -109,6 +109,17 @@ def cmd_parse(a):
         mem.close()
 
 
+def cmd_understand(a):
+    """Read-only: parse + ground one sentence, print the verdict."""
+    from cognitive_ai.semground import ground_statement
+    mem = get_memory()
+    try:
+        print(json.dumps(ground_statement(a.sentence, mem).to_dict(),
+                         ensure_ascii=False, indent=2, default=str))
+    finally:
+        mem.close()
+
+
 def cmd_query(a):
     mem = get_memory()
     r = Reasoner(mem).answer(_load_json_arg(a))
@@ -530,6 +541,7 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("inspect"); s.add_argument("id"); s.set_defaults(fn=cmd_inspect)
     s = sub.add_parser("observe"); s.add_argument("--json", default=None); s.add_argument("--json-file", default=None); s.set_defaults(fn=cmd_observe)
     s = sub.add_parser("parse"); s.add_argument("sentence"); s.set_defaults(fn=cmd_parse)
+    s = sub.add_parser("understand"); s.add_argument("sentence"); s.set_defaults(fn=cmd_understand)
     s = sub.add_parser("query"); s.add_argument("--json", default=None); s.add_argument("--json-file", default=None); s.set_defaults(fn=cmd_query)
     sub.add_parser("gaps").set_defaults(fn=cmd_gaps)
     sub.add_parser("questions").set_defaults(fn=cmd_questions)

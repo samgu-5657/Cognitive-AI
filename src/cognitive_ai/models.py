@@ -135,6 +135,30 @@ class ResearchQuestion:
     detail: dict = field(default_factory=dict)
 
 
+
+
+@dataclass
+class GroundingVerdict:
+    """Read-only grounding of one utterance against the KB (Phase M3B).
+
+    verdict in supported | conflicted | unknown | ambiguous. Pure
+    data, no IO. evidence entries carry kind/ref/status/detail so every
+    judgment points at real rows, rules or traces.
+    """
+
+    sentence: str = ""
+    parse: dict = field(default_factory=dict)
+    subject_match: dict = field(default_factory=dict)
+    object_match: dict = field(default_factory=dict)
+    queries: list = field(default_factory=list)
+    verdict: str = "unknown"
+    evidence: list = field(default_factory=list)
+    ambiguity: str = ""
+    detail: str = ""
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
 @dataclass
 class ParsedUtterance:
     """One compositionally parsed statement (Phase M3A).
