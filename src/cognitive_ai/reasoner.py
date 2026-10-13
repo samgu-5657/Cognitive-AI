@@ -135,6 +135,15 @@ class Reasoner:
             for rule in self.mem.list_rules():
                 if len(fired) >= max_steps or state["limited"]:
                     break
+                if (rule.get("status") or "active") != "active":
+                    if depth == 0:
+                        fired.append(
+                            {"rule": rule.get("id"),
+                             "rule_id": rule.get("id"),
+                             "skipped": True,
+                             "reason": "rule not active "
+                             f"(status={(rule.get('status') or 'active')})"})
+                    continue
                 for entry, facts in self._apply_rule_bound(
                         rule, derived, depth, state, max_work,
                         shapes=(depth == 0)):
@@ -237,6 +246,10 @@ class Reasoner:
             return {"result": "rejected",
                     "detail": "rule not in memory"}
         rule = rows[0]
+        if (rule.get("status") or "active") != "active":
+            return {"result": "rejected",
+                    "detail": f"rule status is now "
+                    f"{rule.get('status')}: proof no longer usable"}
         conc = rule.get("conclusion", {}) or {}
         inst = {k: self._resolve(v, bindings) for k, v in conc.items()}
         for v in inst.values():
@@ -393,9 +406,16 @@ class Reasoner:
                 if r["conclusion"] == "unknown":
                     return [{"unknown": True,
                              "detail": f"unknown attr {c}.{k}"}]
+                # evidence cites the real source row (inherited values
+                # name their origin concept), never the queried concept.
+                basis = [f.get("facts", [""])[0]
+                         if isinstance(f.get("facts"), list) and
+                         f.get("facts") else f.get("detail", "")
+                         for f in r.get("trace", [])]
+                basis = [b for b in basis if b] or \
+                    [f"{c}.{k}={r['conclusion']}"]
                 rows = [(c, k, r["conclusion"],
-                         r.get("status", "verified"),
-                         f"{c}.{k}={r['conclusion']}")]
+                         r.get("status", "verified"), basis[0])]
                 rival = self._rival_values(c, k, r["conclusion"])
                 if rival:
                     return [{"contested": True,
@@ -408,9 +428,14 @@ class Reasoner:
                         return [{"limited": True}]
                     r = self.get_attribute(row["id"], k)
                     if r["conclusion"] != "unknown":
+                        facts = [f.get("facts", [""])[0]
+                                 if isinstance(f.get("facts"), list) and
+                                 f.get("facts") else f.get("detail", "")
+                                 for f in r.get("trace", [])]
+                        facts = [b for b in facts if b] or \
+                            [f"{row['id']}.{k}={r['conclusion']}"]
                         rows.append((row["id"], k, r["conclusion"],
-                                     r.get("status", "verified"),
-                                     f"{row['id']}.{k}={r['conclusion']}"))
+                                     r.get("status", "verified"), facts[0]))
             else:
                 return [{"unknown": True,
                          "detail": "unbound key in has_attr"}]
@@ -451,10 +476,17 @@ class Reasoner:
                     bind[d] = r.get("dst_id")
                 elif r.get("dst_id") != d:
                     continue
-                hits.append({"bind": bind, "status": "verified",
+                st = r.get("status") or "hypothesis"
+                if st == "contested":
+                    return [{"contested": True,
+                             "detail": f"contested relation "
+                             f"{r.get('src_id')}-{r.get('rel_type')}->"
+                             f"{r.get('dst_id')}"}]
+                hits.append({"bind": bind, "status": st,
                              "evidence": [f"{r.get('src_id')}-"
                                           f"{r.get('rel_type')}->"
-                                          f"{r.get('dst_id')}"]})
+                                          f"{r.get('dst_id')} "
+                                          f"[{st}/{r.get('source', '')}]"]})
             return hits
         return [{"unknown": True,
                  "detail": f"unsupported condition type: {t}"}]
@@ -612,6 +644,8 @@ class Reasoner:
                             "no assertion"}, [])
                 continue
             node = {"rule": rule["id"], "rule_id": rule["id"],
+                    "rule_status": rule.get("status") or "active",
+                    "rule_source": rule.get("source", ""),
                     "conclusion": dict(inst),
                     "bindings": dict(b), "depth": depth + 1,
                     "status": st, "trace": list(ev),

@@ -27,8 +27,9 @@ README 讲这个项目是什么，这里记录做到哪一步、实测结果怎�
 | 未知样本隔离队列、人工审核、增量训练 + 回放、回归门禁、active 指针与回滚 | `neural/queue.py`, `gate.py`, `cycle.py` | `test_neural_3b.py`, `test_neural_transfer3b.py` |
 | OOD 五档判定（阈值只用 val 定），候选类别发现 + 留一验证 | `neural/ood.py`, `discovery.py` | `test_neural_3c.py`, `test_neural_discovery_xfer.py` |
 | 变量绑定多步规则推理（`?x` 合一、有界深度搜索、证明链、冲突报告，不写库） | `reasoner.py` | `test_chain_m1.py` |
+| 规则生命周期（active/candidate/validated/disabled/rejected，变更记事件）与关系行真实状态传播 | `memory.py`, `models.py`, `reasoner.py` | `test_rule_lifecycle_m2.py` |
 
-全量测试：`pytest -q` → 装了 torch 时 86 passed（78 旧 + 8 新）；没装 torch 时 66 passed、20 skipped。
+全量测试：`pytest -q` → 装了 torch 时 98 passed（86 旧 + 12 新）；没装 torch 时 78 passed、20 skipped。
 
 ### 只有接口
 

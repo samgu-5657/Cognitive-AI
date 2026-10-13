@@ -37,6 +37,23 @@ class QuestionStatus(str, Enum):
     REJECTED = "rejected"
 
 
+class RuleStatus(str, Enum):
+    """Lifecycle states for rows in the rules table.
+
+    Only ACTIVE rules may fire in deterministic inference. CANDIDATE
+    and VALIDATED rows are stored knowledge waiting for promotion;
+    DISABLED / REJECTED rows stay in the database for audit but never
+    participate. Transitions go through set_rule_status() so every
+    change leaves a lifecycle event.
+    """
+
+    ACTIVE = "active"
+    CANDIDATE = "candidate"
+    VALIDATED = "validated"
+    DISABLED = "disabled"
+    REJECTED = "rejected"
+
+
 @dataclass
 class Concept:
     id: str

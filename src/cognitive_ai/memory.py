@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS rules(
   conclusion TEXT NOT NULL DEFAULT '{}',
   exceptions TEXT NOT NULL DEFAULT '[]',
   source TEXT NOT NULL DEFAULT 'seed',
+  status TEXT NOT NULL DEFAULT 'active',
   created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS experiences(
@@ -165,6 +166,14 @@ class Memory:
                 if name not in cols:
                     self.conn.execute(
                         f"ALTER TABLE evidences ADD COLUMN {name} {ddl}")
+            # Phase M2: rules gain a lifecycle status. Old rows keep
+            # working exactly as before: missing status reads as active.
+            rule_cols = {r["name"] for r in
+                         self.query("PRAGMA table_info(rules)")}
+            if "status" not in rule_cols:
+                self.conn.execute(
+                    "ALTER TABLE rules ADD COLUMN status "
+                    "TEXT NOT NULL DEFAULT 'active'")
             self.conn.commit()
 
     # ---- generic helpers ----
@@ -327,21 +336,53 @@ class Memory:
 
     # ---- rules ----
     def upsert_rule(self, rule: dict) -> None:
+        # Status compat: a fresh row without explicit status starts
+        # active (previous behavior: every stored rule was usable). A
+        # re-upsert never silently flips an existing lifecycle state.
+        existing = self.query_one("SELECT status FROM rules WHERE id=?",
+                                  (rule["id"],))
+        status = rule.get("status")
+        if status is None:
+            status = existing["status"] if existing and \
+                existing.get("status") else "active"
         self.execute(
-            "INSERT INTO rules(id,name,conditions,conclusion,exceptions,source,created_at)"
-            " VALUES(?,?,?,?,?,?,?)"
+            "INSERT INTO rules(id,name,conditions,conclusion,exceptions,source,status,created_at)"
+            " VALUES(?,?,?,?,?,?,?,?)"
             " ON CONFLICT(id) DO UPDATE SET name=excluded.name, conditions=excluded.conditions,"
             " conclusion=excluded.conclusion, exceptions=excluded.exceptions,"
-            " source=excluded.source",
+            " source=excluded.source, status=excluded.status",
             (
                 rule["id"], rule.get("name", rule["id"]),
                 json.dumps(rule.get("conditions", []), ensure_ascii=False),
                 json.dumps(rule.get("conclusion", {}), ensure_ascii=False),
                 json.dumps(rule.get("exceptions", []), ensure_ascii=False),
                 rule.get("source", "seed"),
+                status,
                 rule.get("created_at", _utcnow()),
             ),
         )
+
+    def set_rule_status(self, rule_id: str, status: str,
+                        reason: str = "") -> str:
+        """Move one rule through its lifecycle with an audit record.
+
+        Returns the previous status. Only the RuleStatus vocabulary is
+        accepted; unknown ids raise KeyError.
+        """
+        from .models import RuleStatus
+        allowed = {s.value for s in RuleStatus}
+        if status not in allowed:
+            raise ValueError(f"unknown rule status: {status}")
+        row = self.query_one("SELECT status FROM rules WHERE id=?",
+                             (rule_id,))
+        if row is None:
+            raise KeyError(f"rule not found: {rule_id}")
+        old = row.get("status") or "active"
+        if old != status:
+            self.execute("UPDATE rules SET status=? WHERE id=?",
+                         (status, rule_id))
+            self.record_lifecycle("rule", rule_id, old, status, reason)
+        return old
 
     def list_rules(self) -> list[dict]:
         rows = self.query("SELECT * FROM rules ORDER BY id")
