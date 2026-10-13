@@ -124,6 +124,343 @@ def ground_statement(text: str, mem: Memory) -> GroundingVerdict:
     return out
 
 
+def answer_question(text: str, mem: Memory):
+    """Answer one parsed question. Pure reads, zero writes.
+
+    Returns a GroundingVerdict with verdict in supported | conflicted
+    | unknown | ambiguous | failure plus question/answer/is_yesno.
+    Rules: yes/no needs decisive evidence (no record is never a 否);
+    contested evidence on both sides is conflicted; hypothesis rows
+    keep their label (never upgraded); derived conclusions cite rule,
+    bindings, status and depth; engine errors are failure, never
+    silent empties.
+    """
+    from .semparse import parse_question
+    onto = Ontology(mem)
+    out = GroundingVerdict(sentence=text)
+    try:
+        q = parse_question(text, mem)
+    except Exception as e:
+        out.verdict = "failure"
+        out.detail = f"parser error: {e}"
+        return out
+    out.question = q.to_dict()
+    out.is_yesno = q.is_yesno
+    if q.ambiguity:
+        out.ambiguity = q.ambiguity
+        out.verdict = "ambiguous"
+        out.detail = "question ambiguous, no queries run"
+        return out
+    if q.qkind == "unknown" or not q.subject_known:
+        out.detail = "unresolvable subject or question form"
+        return out
+    subj = _resolve_concept(mem, q.subject)
+    if subj is None:
+        out.detail = f"subject not in KB: {q.subject}"
+        return out
+    out.subject_match = {"text": q.subject, "concept_id": subj}
+    try:
+        return _answer_dispatch(out, q, subj, mem, onto)
+    except Exception as e:
+        out.verdict = "failure"
+        out.detail = f"engine error: {e}"
+        return out
+
+
+def _answer_dispatch(out, q, subj, mem, onto):
+    rsn = Reasoner(mem)
+    kind = q.qkind
+    if kind == "category":
+        direct = sorted(mem.get_parents(subj))
+        try:
+            chain = sorted(set(onto.ancestors(subj)) - set(direct) -
+                           {subj})
+        except Exception:
+            chain = []
+        if not direct and not chain:
+            out.detail = f"no category recorded for {subj}"
+            return out
+        for p in direct:
+            out.evidence.append(_ev("parents", p, "verified",
+                                    f"{subj} direct parent"))
+        for p in chain:
+            out.evidence.append(_ev("parents", p, "inherited",
+                                    f"{subj} inherited parent"))
+        out.queries.append({"op": "parents", "concept": subj})
+        out.verdict = "supported"
+        out.answer = "、".join(direct + chain)
+        out.detail = (f"direct: {direct}; inherited: {chain}")
+        return out
+    if kind == "capability" and not q.is_yesno:
+        return _answer_open_attr(out, q, subj, mem, onto, "function")
+    if kind == "attr_open" and not q.is_yesno:
+        key = FEATURE_KEYS.get(q.object, q.object)
+        if not key:
+            out.detail = "attribute word missing"
+            return out
+        return _answer_open_attr(out, q, subj, mem, onto, key)
+    if kind == "has" and not q.is_yesno:
+        return _answer_open_has(out, q, subj, mem, onto)
+    if kind == "has" and q.is_yesno:
+        return _answer_verify_has(out, q, subj, mem, onto)
+    if kind == "is_a_verify":
+        return _answer_verify_isa(out, q, subj, mem, onto, rsn)
+    if kind == "capability" and q.is_yesno:
+        return _answer_verify_capable(out, q, subj, mem, onto)
+    out.detail = f"question kind '{kind}' has no query mapping"
+    return out
+
+
+def _answer_open_attr(out, q, subj, mem, onto, key):
+    out.queries.append({"op": "get_attribute", "concept": subj,
+                        "key": key})
+    try:
+        inh = onto.inherited_attributes(subj)
+    except Exception:
+        inh = {}
+    vals = []
+    if key in inh:
+        row = inh[key]
+        vals.append((row.get("value"), row.get("status", "hypothesis"),
+                     row.get("id")))
+        out.evidence.append(_ev("attribute", row.get("id"),
+                                row.get("status", "hypothesis"),
+                                f"{row.get('concept_id')}.{key}="
+                                f"{row.get('value')}"))
+        # rival rows the nearest-wins lookup hides (same key, other
+        # values, own or nearest-ancestor level): they make the answer
+        # contested instead of silently picked.
+        for other in _rival_attr_values(mem, onto, subj, key,
+                                        row.get("value")):
+            vals.append(other)
+            out.evidence.append(_ev("attribute", other[2], "contested",
+                                    f"rival value kept: {other[0]}"))
+    for f in _derived_for(mem, subj, key):
+        vals.append((f["value"], f["status"], f["ref"]))
+        out.evidence.append(_ev("rule", f["ref"], f["status"], f["why"]))
+    if not vals:
+        out.detail = f"no {key} recorded for {subj}"
+        return out
+    uniq = {str(v) for v, _, _ in vals}
+    if len(uniq) > 1:
+        out.verdict = "conflicted"
+        out.answer = "；".join(f"{v}（{s}）" for v, s, _ in vals)
+        out.detail = "rival values kept, no silent pick"
+        return out
+    v, s, _ = vals[0]
+    out.verdict = "supported"
+    out.answer = str(v)
+    out.detail = f"value status kept as {s}"
+    return out
+
+
+def _answer_open_has(out, q, subj, mem, onto):
+    out.queries.append({"op": "list_attributes", "concept": subj})
+    try:
+        inh = onto.inherited_attributes(subj)
+    except Exception:
+        inh = {}
+    try:
+        rels = mem.get_relations(src_id=subj)
+    except Exception:
+        rels = []
+    derived = _derived_for(mem, subj, "")
+    for f in derived:
+        out.evidence.append(_ev("rule", f["ref"], f["status"], f["why"]))
+    if not inh and not rels and not derived:
+        out.detail = f"nothing recorded for {subj}"
+        return out
+    for key, row in inh.items():
+        out.evidence.append(_ev("attribute", row.get("id"),
+                                row.get("status", "hypothesis"),
+                                f"{row.get('concept_id')}.{key}="
+                                f"{row.get('value')}"))
+    for r in rels:
+        out.evidence.append(_ev("relation", r.get("id"),
+                                r.get("status", "hypothesis"),
+                                f"{subj}-{r.get('rel_type')}->"
+                                f"{r.get('dst_id')}"))
+    out.verdict = "supported"
+    out.answer = "、".join(sorted(inh)) + (
+        "；" + "、".join(f"{r.get('rel_type')}->{r.get('dst_id')}"
+                         for r in rels) if rels else "") + (
+        "；" + "、".join(f"推导:{f['value']}@{f['ref']}" for f in derived)
+        if derived else "")
+    out.detail = f"{len(inh)} attribute(s), {len(rels)} relation(s), " \
+        f"{len(derived)} derived"
+    return out
+
+
+# Fixed Chinese -> canonical key vocabulary for has-questions
+# (tiny, documented; not per-sentence logic).
+FEATURE_KEYS = {"功能": "function", "作用": "function", "用途": "function",
+                "用处": "function", "材质": "material", "材料": "material",
+                "颜色": "color", "形状": "shape", "位置": "location"}
+
+
+def _canon_feature(feat: str) -> str:
+    return FEATURE_KEYS.get(feat, feat)
+
+
+def _answer_verify_has(out, q, subj, mem, onto):
+    feat = _canon_feature(q.object)
+    out.queries.append({"op": "has_attr_scan", "concept": subj,
+                        "feature": feat, "negated": q.negated})
+    try:
+        inh = onto.inherited_attributes(subj)
+    except Exception:
+        inh = {}
+    pros, cons = [], []
+    for key, row in inh.items():
+        st = row.get("status", "hypothesis")
+        if key == feat or key == q.object or row.get("value") == feat:
+            (pros if "contested" not in str(st) else cons).append(
+                (key, row))
+            out.evidence.append(_ev(
+                "attribute", row.get("id"), st,
+                f"{row.get('concept_id')}.{key}={row.get('value')}"))
+    if pros and cons:
+        out.verdict = "conflicted"
+        out.answer = "存疑"
+        out.detail = "supporting and rival evidence both kept"
+        return out
+    hit = bool(pros)
+    if q.negated:
+        # denial of a supported feature is contradicted; denial with
+        # no record at all stays unknown (absence is not proof).
+        if hit:
+            out.verdict = "conflicted"
+            out.answer = "否"
+            out.detail = "denial contradicted by stored evidence"
+        else:
+            out.detail = f"no record of {feat} on {subj}"
+        return out
+    if hit:
+        out.verdict = "supported"
+        out.answer = "是"
+        out.detail = "feature recorded"
+        return out
+    out.detail = f"no record of {feat} on {subj}; not proven false"
+    return out
+
+
+def _answer_verify_isa(out, q, subj, mem, onto, rsn):
+    target = _resolve_concept(mem, q.object)
+    out.object_match = {"text": q.object, "concept_id": target}
+    out.queries.append({"op": "is_a", "concept": subj,
+                        "ancestor": q.object, "negated": q.negated})
+    if target is None:
+        out.detail = f"object not in KB: {q.object}"
+        return out
+    r = rsn.is_a(subj, target)
+    out.evidence.append(_ev("is_a", f"{subj}->{target}", "verified",
+                            str(r.get("trace", []))))
+    holds = bool(r["conclusion"]) if r["conclusion"] != "unknown" else None
+    if holds is None:
+        out.detail = "hierarchy lookup failed"
+        return out
+    if q.negated:
+        out.verdict = "conflicted" if holds else "supported"
+        out.answer = "否" if holds else "是"
+        out.detail = "negated membership question over decided hierarchy"
+        return out
+    out.verdict = "supported"
+    out.answer = "是" if holds else "否"
+    out.detail = "decided hierarchy"
+    return out
+
+
+def _answer_verify_capable(out, q, subj, mem, onto):
+    action = q.object
+    out.queries.append({"op": "capability", "concept": subj,
+                        "action": action, "modal": q.modal,
+                        "negated": q.negated})
+    try:
+        inh = onto.inherited_attributes(subj)
+    except Exception:
+        inh = {}
+    pros, cons = [], []
+    for key, row in inh.items():
+        st = row.get("status", "hypothesis")
+        if key == "function" and row.get("value") == action:
+            (pros if "contested" not in str(st) else cons).append(row)
+            out.evidence.append(_ev(
+                "attribute", row.get("id"), st,
+                f"{row.get('concept_id')}.function={action}"))
+    if pros and cons:
+        out.verdict = "conflicted"
+        out.answer = "存疑"
+        out.detail = "supporting and rival evidence both kept"
+        return out
+    if q.negated:
+        if pros:
+            out.verdict = "conflicted"
+            out.answer = "否"
+            out.detail = "denied capability contradicted by evidence"
+        else:
+            out.detail = f"no record of capability {action} on {subj}"
+        return out
+    if pros:
+        out.verdict = "supported"
+        out.answer = "是"
+        out.detail = "capability recorded"
+        return out
+    out.detail = f"no record of capability {action} on {subj}; " \
+        "not proven false"
+    return out
+
+
+def _rival_attr_values(mem, onto, cid, key, value):
+    """Other stored values for the applicable rows of cid.key."""
+    import json as _json
+    try:
+        own = [a.get("value") for a in mem.get_attributes(cid)
+               if a.get("key") == key]
+        pool = own if own else []
+        ids = {a.get("id"): a.get("value")
+               for a in mem.get_attributes(cid) if a.get("key") == key}
+        if not pool:
+            for anc in onto.ancestors(cid):
+                rows = [a for a in mem.get_attributes(anc)
+                        if a.get("key") == key]
+                if rows:
+                    pool = [a.get("value") for a in rows]
+                    ids = {a.get("id"): a.get("value") for a in rows}
+                    break
+        out = []
+        for aid, v in ids.items():
+            if _json.dumps(v, sort_keys=True, default=str) != \
+                    _json.dumps(value, sort_keys=True, default=str):
+                out.append((v, "contested", aid))
+        return out
+    except Exception:
+        return []
+
+
+def _derived_for(mem, subj, key):
+    """Rule-derived (concept, key) values with rule/binding/status."""
+    out = []
+    try:
+        from .reasoner import Reasoner
+        fired = Reasoner(mem).forward_chain()
+    except Exception:
+        return out
+    for f in fired:
+        conc = f.get("conclusion")
+        if not isinstance(conc, dict) or conc.get("type") != "has_attr":
+            continue
+        if conc.get("concept") != subj:
+            continue
+        if key and conc.get("key") != key:
+            continue
+        out.append({"value": conc.get("value"),
+                    "status": f.get("status", "hypothesis"),
+                    "ref": f.get("rule_id", f.get("rule")),
+                    "why": f"depth={f.get('depth', 1)} "
+                    f"bindings={f.get('bindings', {})}"})
+    return out
+
+
 def _resolve_concept(mem: Memory, text: str):
     if not text:
         return None

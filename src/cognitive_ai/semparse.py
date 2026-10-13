@@ -123,6 +123,221 @@ def _strip_particles(text: str) -> str:
     return s
 
 
+Q_WORDS = ("什么", "谁", "哪个", "哪些", "多少", "几", "是否",
+           "怎么", "为什么")
+Q_ENDS = ("吗", "呢")
+
+
+def _has_qword(text: str) -> bool:
+    return any(w in text for w in Q_WORDS)
+
+
+def parse_question(text: str, mem: Memory):
+    """Parse one question compositionally into ParsedQuestion.
+
+    Same building blocks as statements (known-subject lookup, negation
+    and modal tokens, heads), plus interrogative detection. A form that
+    is not a supported question shape yields unknown/ambiguity with a
+    reason -- never a guessed query, never an auto-created concept.
+    """
+    from .models import ParsedQuestion
+    raw = text
+    s = _strip_outer(text)
+    q = ParsedQuestion(raw=raw)
+    q.spans["input"] = s
+    if not s:
+        q.ambiguity = "empty input"
+        return q
+    subj_text, _subj_id, cand = _resolve_subject(mem, s)
+    if cand and subj_text is None:
+        q.ambiguity = ("subject span matches several concepts: " +
+                       ", ".join(cand))
+        q.unknown_spans.append(s)
+        return q
+    if subj_text is None:
+        # unknown subject: marker-led split like statements, but the
+        # question stays unanswerable until the subject is known.
+        hit = None
+        for mk in ("是不是", "能不能", "有没有", "不是", "并非",
+                   "没有", "不能", "不会", "无法", "不可", "可以",
+                   "能够", "能", "是", "有"):
+            i = s.find(mk)
+            if i > 0 and (hit is None or i < hit[0]):
+                hit = (i, mk)
+        if hit is None:
+            q.unknown_spans.append(s)
+            return q
+        subj_text = s[:hit[0]].strip()
+        if not subj_text:
+            q.unknown_spans.append(s)
+            return q
+        q.subject = subj_text
+        q.subject_known = False
+        q.unknown_spans.append(subj_text)
+        q.spans["subject"] = subj_text
+        q.spans["subject_unresolved"] = True
+        rest = s[hit[0]:].strip()
+    else:
+        q.subject = subj_text
+        q.subject_known = True
+        q.spans["subject"] = subj_text
+        rest = s[len(subj_text):].strip()
+    if not rest:
+        q.ambiguity = "subject without question"
+        return q
+    negated, neg_kind, rest = _split_negation(rest)
+    q.negated = negated
+    if neg_kind:
+        q.spans["negation"] = neg_kind
+    modal = None
+    for m in MODALS:
+        if rest.startswith(m):
+            modal = "can"
+            q.spans["modal"] = m
+            rest = rest[len(m):].strip()
+            break
+    if modal is None and neg_kind in ("不能", "不会", "无法", "不可"):
+        modal = "can"
+        q.spans["modal"] = neg_kind
+    q.modal = modal
+    # trailing 做/进行 light verbs after a modal carry no new role
+    if modal is not None:
+        for lv in ("做", "进行", "加以"):
+            if rest.startswith(lv):
+                q.spans["light_verb"] = lv
+                rest = rest[len(lv):].strip()
+                break
+    named = NEG_PRED.get(neg_kind, "")
+    # A-not-A verifications first (是不是/能不能/有没有 name both the
+    # predicate and the yes/no form).
+    m = _match_ana(rest)
+    if m is not None:
+        kind, body = m
+        return _finish_question(q, mem, kind, body, True,
+                                named or kind)
+    # trailing question particles mark yes/no on complete propositions.
+    qmark = False
+    for end in Q_ENDS:
+        if rest.endswith(end) and len(rest) > len(end):
+            qmark = True
+            q.spans["qmark"] = end
+            rest = rest[:-len(end)].strip()
+            break
+    rest = _strip_particles(rest)
+    import re as _re
+    mposs = _re.match(r"^的(.+?)是什么$", rest)
+    if mposs and mposs.group(1).strip():
+        # possessive open question (X的材质是什么): checked before the
+        # generic interrogative branch, which would otherwise swallow
+        # it. The attribute word travels as the object; key mapping
+        # happens at answer time.
+        q.qkind = "attr_open"
+        q.object = mposs.group(1).strip()
+        q.spans["object"] = q.object
+        q.unknown_spans.append(q.object)
+        q.is_yesno = False
+        return q
+    if _has_qword(rest):
+        return _finish_open(q, mem, rest, named, modal)
+    if not rest:
+        q.ambiguity = "marker without content"
+        return q
+    # a negated head that already named the kind (没有X / 不能X)
+    # verifies that kind; bare negation without a named kind stays out.
+    if q.negated and named in ("is_a", "has", "capable"):
+        return _finish_question(q, mem, named, rest, True, named)
+    # complete proposition (+optional 吗): yes/no verification only
+    # when a question particle was actually seen; a bare assertion
+    # (杯子可以盛水) is not a question at all.
+    if not qmark:
+        q.unknown_spans.append(rest)
+        return q
+    if rest.startswith(COPULA):
+        return _finish_question(q, mem, "is_a",
+                                _strip_particles(rest[1:].strip()),
+                                True, named or "is_a")
+    if rest.startswith(HAVE):
+        return _finish_question(q, mem, "has",
+                                _strip_particles(rest[1:].strip()),
+                                True, named or "has")
+    if modal is not None:
+        return _finish_question(q, mem, "capable", rest, True,
+                                named or "capable")
+    q.unknown_spans.append(rest)
+    return q
+
+
+def _match_ana(rest: str):
+    """A-not-A heads: (kind, body) or None. Generic slots only."""
+    import re as _re
+    m = _re.match(r"^是不是(.+)$", rest)
+    if m:
+        return ("is_a", m.group(1).strip())
+    m = _re.match(r"^能不能(.+)$", rest)
+    if m:
+        return ("capable", m.group(1).strip())
+    m = _re.match(r"^有没有(.+)$", rest)
+    if m:
+        return ("has", m.group(1).strip())
+    return None
+
+
+def _finish_open(q, mem, rest: str, named: str, modal):
+    """Open (wh-) question from the interrogative remainder."""
+    # X有什么功能/作用 -> capability; X有什么 -> open possession;
+    # X是什么 -> category; X可以做什么 -> capability.
+    for key, words in (("function", ("功能", "作用", "用途", "用处")),):
+        for w in words:
+            if rest == f"有什么{w}":
+                q.qkind = "capability"
+                q.key = "function"
+                q.is_yesno = False
+                q.spans["target"] = w
+                return q
+    if rest in ("有什么", "有啥", "有些什么"):
+        q.qkind = "has"
+        q.is_yesno = False
+        return q
+    if rest == "是什么":
+        q.qkind = "category"
+        q.is_yesno = False
+        return q
+    if modal is not None and rest in ("做什么", "干什么", "做些什么"):
+        q.qkind = "capability"
+        q.key = "function"
+        q.is_yesno = False
+        return q
+    q.unknown_spans.append(rest)
+    return q
+
+
+def _finish_question(q, mem, kind: str, body: str, yesno: bool,
+                     named: str):
+    """Yes/no verification frame for a complete proposition."""
+    body = _strip_particles(body.strip())
+    if not body:
+        q.ambiguity = "marker without content"
+        return q
+    if kind == "is_a":
+        q.qkind = "is_a_verify"
+    elif kind == "has":
+        q.qkind = "has"
+    elif kind == "capable":
+        q.qkind = "capability"
+    else:
+        q.unknown_spans.append(body)
+        return q
+    q.object = body
+    q.spans["object"] = body
+    q.is_yesno = yesno
+    if kind == "capable":
+        q.key = "function"
+    if kind == "has" and body in ("功能", "作用", "用途", "用处"):
+        q.key = "function"
+    q.unknown_spans.append(body)
+    return q
+
+
 def parse_statement(text: str, mem: Memory) -> ParsedUtterance:
     """Parse one simple statement compositionally. Never guesses."""
     raw = text

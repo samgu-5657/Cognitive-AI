@@ -138,6 +138,35 @@ class ResearchQuestion:
 
 
 @dataclass
+class ParsedQuestion:
+    """One compositionally parsed question (Phase M3D).
+
+    qkind in category | attribute | capability | has | is_a_verify.
+    is_yesno marks yes/no questions (answer 是/否 with evidence);
+    open questions expect a value. expected carries the asked-about
+    value for verification questions. Pure data, no IO.
+    """
+
+    raw: str = ""
+    subject: str = ""
+    subject_known: bool = False
+    qkind: str = "unknown"
+    key: str = ""
+    expected: str = ""
+    object: str = ""
+    object_known: bool = False
+    negated: bool = False
+    modal: str | None = None
+    is_yesno: bool = False
+    unknown_spans: list = field(default_factory=list)
+    ambiguity: str = ""
+    spans: dict = field(default_factory=dict)
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass
 class PendingCandidate:
     """A not-yet-accepted learning candidate (Phase M3C).
 
@@ -177,6 +206,9 @@ class GroundingVerdict:
     evidence: list = field(default_factory=list)
     ambiguity: str = ""
     detail: str = ""
+    question: dict = field(default_factory=dict)
+    answer: str = ""
+    is_yesno: bool = False
 
     def to_dict(self) -> dict:
         return asdict(self)

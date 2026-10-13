@@ -31,8 +31,9 @@ README 讲这个项目是什么，这里记录做到哪一步、实测结果怎�
 | 可组合中文语义解析（主体/谓词/对象/否定/能力模态，7 式切片） | `semparse.py`, `novelty.py` | `test_semparse_m3a.py` |
 | 只读语义接地（supported/conflicted/unknown/ambiguous + 证据） | `semground.py`, `models.py` | `test_semground_m3b.py` |
 | 中文陈述候选学习（learn/confirm/reject/pending，经现有生命周期门禁） | `learner.py`, `memory.py`, `cli.py` | `test_learn_nl_m3c.py` |
+| 中文问题理解与只读查询（9 式切片，supported/conflicted/unknown/ambiguous/failure） | `semparse.py`, `semground.py`, `cli.py` | `test_ask_m3d.py` |
 
-全量测试：`pytest -q` → 装了 torch 时 131 passed（119 旧 + 12 新）；没装 torch 时 111 passed、20 skipped。
+全量测试：`pytest -q` → 装了 torch 时 144 passed（131 旧 + 13 新）；没装 torch 时 124 passed、20 skipped。
 
 ### 只有接口
 
