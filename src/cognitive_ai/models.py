@@ -136,6 +136,33 @@ class ResearchQuestion:
 
 
 @dataclass
+class ParsedUtterance:
+    """One compositionally parsed statement (Phase M3A).
+
+    Pure data, no IO. The parser fills subject/predicate/object from
+    independent pieces (known-concept lookup, function-word tokens);
+    anything unrecognized stays in unknown_spans instead of being
+    dropped or invented. An input the parser cannot structure has
+    predicate "unknown".
+    """
+
+    raw: str = ""
+    subject: str = ""
+    subject_known: bool = False
+    predicate: str = "unknown"  # is_a | has | capable | unspecified | unknown
+    object: str = ""
+    object_known: bool = False
+    negated: bool = False
+    modal: Optional[str] = None  # "can" for 可以/能够/能, else None
+    unknown_spans: list = field(default_factory=list)
+    ambiguity: str = ""
+    spans: dict = field(default_factory=dict)
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass
 class SchemaChangeProposal:
     kind: str  # add_concept | add_attribute | add_relation | reparent | split_category | merge_categories | update_rule
     payload: dict = field(default_factory=dict)

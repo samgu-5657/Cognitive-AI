@@ -27,8 +27,35 @@ _PATTERNS = [
 ]
 
 
-def parse_chinese_simple(sentence: str) -> dict:
-    """Best-effort deterministic parse. Returns {"parsed": bool, ...}."""
+def parse_chinese_simple(sentence: str, mem=None) -> dict:
+    """Best-effort deterministic parse. Returns {"parsed": bool, ...}.
+
+    With a memory handle this runs the compositional parser
+    (semparse.parse_statement) and maps the result back onto the
+    legacy shape, plus negation/modality/ambiguity extras. Without one
+    it keeps the three legacy whole-sentence patterns so old callers
+    keep working.
+    """
+    if mem is None:
+        return _parse_legacy(sentence)
+    from .semparse import parse_statement
+    u = parse_statement(sentence, mem)
+    kind_map = {"is_a": "is_a", "has": "has_feature",
+                "capable": "capability"}
+    out = {"parsed": u.predicate in kind_map,
+           "kind": kind_map.get(u.predicate, u.predicate),
+           "subj": u.subject, "obj": u.object,
+           "negated": u.negated, "modal": u.modal,
+           "ambiguity": u.ambiguity,
+           "unknown_spans": u.unknown_spans, "spans": u.spans}
+    if not out["parsed"]:
+        out["note"] = ("unsupported sentence pattern; needs structured "
+                       "input")
+        out["raw"] = sentence
+    return out
+
+
+def _parse_legacy(sentence: str) -> dict:
     for rx, kind in _PATTERNS:
         m = rx.match(sentence.strip())
         if m:

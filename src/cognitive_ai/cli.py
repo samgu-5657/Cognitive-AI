@@ -101,7 +101,12 @@ def cmd_observe(a):
 
 
 def cmd_parse(a):
-    print(json.dumps(parse_chinese_simple(a.sentence), ensure_ascii=False, indent=2))
+    mem = get_memory()
+    try:
+        print(json.dumps(parse_chinese_simple(a.sentence, mem),
+                         ensure_ascii=False, indent=2))
+    finally:
+        mem.close()
 
 
 def cmd_query(a):
