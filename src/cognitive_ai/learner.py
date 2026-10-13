@@ -161,12 +161,11 @@ class Learner:
         return result
 
     # ---- NL candidate learning (Phase M3C) ----
-    def propose_from_utterance(self, text: str) -> dict:
-        """Parse + ground one Chinese statement into a pending candidate.
+    def classify_utterance(self, text: str) -> dict:
+        """Parse + ground + map to a candidate shape. Zero writes.
 
-        Writes exactly one pending_candidates row (status proposed) and
-        nothing else. The candidate records kind/observation/reason;
-        confirmation happens separately in confirm_candidate().
+        Same mapping as propose_from_utterance, but creates nothing:
+        used by read-only preview flows.
         """
         from .semground import ground_statement
         from .semparse import parse_statement
@@ -189,6 +188,30 @@ class Learner:
                                   "nothing saved")
             else:
                 cand.update(built)
+        return cand
+
+    def propose_from_utterance(self, text: str,
+                               source: dict | None = None) -> dict:
+        """Parse + ground one Chinese statement into a pending candidate.
+
+        Writes exactly one pending_candidates row (status proposed) and
+        nothing else. The candidate records kind/observation/reason;
+        confirmation happens separately in confirm_candidate().
+        An optional ``source`` mapping (source_id/source_group/origin)
+        is kept inside the observation and reason for traceability; it
+        never changes the classification and never asserts truth.
+        """
+        cand = self.classify_utterance(text)
+        if source is not None and cand.get("can_confirm"):
+            obs = dict(cand.get("observation") or {})
+            obs["import_source"] = {
+                "source_id": str(source.get("source_id", "")),
+                "source_group": str(source.get("source_group", "")),
+                "origin": str(source.get("origin", "import")),
+            }
+            cand["observation"] = obs
+            cand["reason"] = (cand.get("reason") or "") + \
+                f" [src {obs['import_source']['source_id'] or '?'}]"
         pid = self.mem.add_pending_candidate(
             cand["kind"], text, cand["parse"],
             cand.get("observation") or {}, cand["reason"])

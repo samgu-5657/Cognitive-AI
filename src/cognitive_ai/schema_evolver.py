@@ -202,5 +202,23 @@ class SchemaEvolver:
     def history(self) -> list[dict]:
         return self.mem.list_changes()
 
+    # ---- world-model storage (Phase M4-D) ----
+    def ensure_world_model_storage(self) -> dict:
+        """Create world-instance/state/event tables, idempotently.
+
+        Physical storage versioning only: records the
+        ``world-model-storage-v1`` marker in the meta table. The
+        semantic ``schema_versions`` chain is deliberately untouched --
+        knowledge snapshots and storage format are different version
+        semantics and must not be conflated.
+        """
+        from .memory import WORLD_MODEL_STORAGE_VERSION
+        if self.mem.get_world_storage_version() == \
+                WORLD_MODEL_STORAGE_VERSION:
+            return {"ok": True, "migration_id":
+                    WORLD_MODEL_STORAGE_VERSION, "applied": False}
+        version = self.mem.ensure_world_tables()
+        return {"ok": True, "migration_id": version, "applied": True}
+
     def versions(self) -> list[dict]:
         return self.mem.list_versions()

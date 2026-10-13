@@ -149,6 +149,44 @@ EVIDENCE_MIGRATION_COLUMNS = (
     ("origin_note", "TEXT NOT NULL DEFAULT ''"),
 )
 
+# Phase M4-D: world-instance / state-snapshot / simulation-event storage.
+# Separate tables; existing knowledge rows are never migrated or touched.
+WORLD_MODEL_STORAGE_VERSION = "world-model-storage-v1"
+
+WORLD_MODEL_TABLES_SQL = """
+CREATE TABLE IF NOT EXISTS worlds(
+  world_id TEXT PRIMARY KEY,
+  name TEXT NOT NULL DEFAULT '',
+  storage_format_version TEXT NOT NULL DEFAULT 'world-model-storage-v1'
+);
+CREATE TABLE IF NOT EXISTS world_states(
+  state_id TEXT PRIMARY KEY,
+  world_id TEXT NOT NULL,
+  parent_state_id TEXT,
+  step_index INTEGER NOT NULL DEFAULT 0 CHECK(step_index >= 0),
+  state_format_version TEXT NOT NULL DEFAULT 'world-state-v1'
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_world_states_initial
+  ON world_states(world_id) WHERE parent_state_id IS NULL;
+CREATE TABLE IF NOT EXISTS world_state_facts(
+  state_id TEXT NOT NULL,
+  fact_index INTEGER NOT NULL,
+  content TEXT NOT NULL DEFAULT '{}',
+  PRIMARY KEY(state_id, fact_index)
+);
+CREATE TABLE IF NOT EXISTS world_events(
+  event_id TEXT PRIMARY KEY,
+  world_id TEXT NOT NULL,
+  action_id TEXT NOT NULL DEFAULT '',
+  pre_state_id TEXT NOT NULL,
+  post_state_id TEXT NOT NULL UNIQUE,
+  step_index INTEGER NOT NULL DEFAULT 0 CHECK(step_index >= 0),
+  bindings TEXT NOT NULL DEFAULT '[]',
+  effects TEXT NOT NULL DEFAULT '[]',
+  simulated INTEGER NOT NULL DEFAULT 1
+);
+"""
+
 
 class Memory:
     """Thin SQLite wrapper. All writes commit immediately."""
@@ -511,6 +549,169 @@ class Memory:
         return self.query(
             "SELECT * FROM lifecycle_events WHERE target_ref=? ORDER BY id",
             (target_ref,))
+
+    def transact(self, ops: list[tuple[str, tuple]]) -> None:
+        """Run several writes in one transaction; any failure rolls back."""
+        with self.lock:
+            try:
+                cur = self.conn.cursor()
+                for sql, params in ops:
+                    cur.execute(sql, params)
+                self.conn.commit()
+            except Exception:
+                self.conn.rollback()
+                raise
+
+    def apply_rule_change(self, *, rule_upserts=(), rule_statuses=(),
+                          lifecycles=(), experiences=(),
+                          change_marks=()) -> None:
+        """Apply one rule change with all audit rows atomically.
+
+        Each entry mirrors its single-purpose counterpart (upsert_rule,
+        set_rule_status parts, record_lifecycle, add_experience,
+        update_change_status) so the bundle changes no semantics, only
+        the transaction boundary. Any failure rolls everything back.
+        """
+        ops = []
+        for r in rule_upserts:
+            ops.append((
+                "INSERT INTO rules(id,name,conditions,conclusion,exceptions,"
+                "source,status,created_at) VALUES(?,?,?,?,?,?,?,?)"
+                " ON CONFLICT(id) DO UPDATE SET name=excluded.name,"
+                " conditions=excluded.conditions,"
+                " conclusion=excluded.conclusion,"
+                " exceptions=excluded.exceptions,"
+                " source=excluded.source, status=excluded.status",
+                (r["id"], r.get("name", r["id"]),
+                 json.dumps(r.get("conditions", []), ensure_ascii=False),
+                 json.dumps(r.get("conclusion", {}), ensure_ascii=False),
+                 json.dumps(r.get("exceptions", []), ensure_ascii=False),
+                 r.get("source", "seed"), r.get("status", "active"),
+                 r.get("created_at", _utcnow())),
+            ))
+        for rule_id, status in rule_statuses:
+            ops.append(("UPDATE rules SET status=? WHERE id=?",
+                        (status, rule_id)))
+        for entry in lifecycles:
+            target_type, target_ref, from_state, to_state, reason, \
+                evidence = entry
+            ops.append((
+                "INSERT INTO lifecycle_events(target_type,target_ref,"
+                "from_state,to_state,reason,evidence,created_at)"
+                " VALUES(?,?,?,?,?,?,?)",
+                (target_type, target_ref, from_state, to_state, reason,
+                 json.dumps(evidence or [], ensure_ascii=False),
+                 _utcnow()),
+            ))
+        for entry in experiences:
+            kind, summary, detail = entry
+            ops.append((
+                "INSERT INTO experiences(kind,summary,detail,prediction,"
+                "outcome,created_at) VALUES(?,?,?,?,?,?)",
+                (kind, summary,
+                 json.dumps(detail or {}, ensure_ascii=False),
+                 json.dumps({}, ensure_ascii=False),
+                 json.dumps({}, ensure_ascii=False), _utcnow()),
+            ))
+        for change_id, status in change_marks:
+            ops.append(("UPDATE schema_changes SET status=? WHERE id=?",
+                        (status, change_id)))
+        self.transact(ops)
+
+    # ---- world-model storage (Phase M4-D) ----
+    def ensure_world_tables(self) -> str:
+        """Create world tables idempotently; record the storage version.
+
+        Re-running is safe: tables use IF NOT EXISTS and the version
+        marker is only set, never used to rewrite data. Statements run
+        one by one because cursor.execute() takes single statements;
+        DDL autocommits in SQLite, so crash-safety comes from the
+        marker (set last: absent marker means retry) rather than from
+        rolling back table creation.
+        """
+        statements = [s.strip() for s in WORLD_MODEL_TABLES_SQL.split(";")
+                      if s.strip()]
+        self.transact([(s, ()) for s in statements])
+        self.set_meta("world_model_storage_version",
+                      WORLD_MODEL_STORAGE_VERSION)
+        return WORLD_MODEL_STORAGE_VERSION
+
+    def get_world_storage_version(self) -> Optional[str]:
+        return self.get_meta("world_model_storage_version")
+
+    def insert_world(self, world_id: str, name: str,
+                     storage_version: str) -> None:
+        self.execute(
+            "INSERT INTO worlds(world_id,name,storage_format_version)"
+            " VALUES(?,?,?)", (world_id, name, storage_version))
+
+    def get_world(self, world_id: str) -> Optional[dict]:
+        return self.query_one("SELECT * FROM worlds WHERE world_id=?",
+                              (world_id,))
+
+    def list_worlds(self) -> list[dict]:
+        return self.query("SELECT * FROM worlds ORDER BY world_id")
+
+    def insert_world_state(self, state_id: str, world_id: str,
+                           parent_state_id: Optional[str],
+                           step_index: int,
+                           state_version: str) -> None:
+        self.execute(
+            "INSERT INTO world_states(state_id,world_id,parent_state_id,"
+            "step_index,state_format_version) VALUES(?,?,?,?,?)",
+            (state_id, world_id, parent_state_id, step_index,
+             state_version))
+
+    def get_world_state(self, state_id: str) -> Optional[dict]:
+        return self.query_one("SELECT * FROM world_states WHERE state_id=?",
+                              (state_id,))
+
+    def list_world_states(self, world_id: str) -> list[dict]:
+        return self.query(
+            "SELECT * FROM world_states WHERE world_id=? "
+            "ORDER BY step_index, state_id", (world_id,))
+
+    def get_initial_world_state(self, world_id: str) -> Optional[dict]:
+        return self.query_one(
+            "SELECT * FROM world_states WHERE world_id=? "
+            "AND parent_state_id IS NULL", (world_id,))
+
+    def insert_world_fact(self, state_id: str, fact_index: int,
+                          content: str) -> None:
+        self.execute(
+            "INSERT INTO world_state_facts(state_id,fact_index,content)"
+            " VALUES(?,?,?)", (state_id, fact_index, content))
+
+    def get_world_fact_rows(self, state_id: str) -> list[dict]:
+        return self.query(
+            "SELECT * FROM world_state_facts WHERE state_id=? "
+            "ORDER BY fact_index", (state_id,))
+
+    def insert_world_event(self, event_id: str, world_id: str,
+                           action_id: str, pre_state_id: str,
+                           post_state_id: str, step_index: int,
+                           bindings: str, effects: str,
+                           simulated: int) -> None:
+        self.execute(
+            "INSERT INTO world_events(event_id,world_id,action_id,"
+            "pre_state_id,post_state_id,step_index,bindings,effects,"
+            "simulated) VALUES(?,?,?,?,?,?,?,?,?)",
+            (event_id, world_id, action_id, pre_state_id, post_state_id,
+             step_index, bindings, effects, simulated))
+
+    def get_world_event(self, event_id: str) -> Optional[dict]:
+        return self.query_one("SELECT * FROM world_events WHERE event_id=?",
+                              (event_id,))
+
+    def get_world_event_by_post(self, post_state_id: str) -> Optional[dict]:
+        return self.query_one(
+            "SELECT * FROM world_events WHERE post_state_id=?",
+            (post_state_id,))
+
+    def list_world_events(self, world_id: str) -> list[dict]:
+        return self.query(
+            "SELECT * FROM world_events WHERE world_id=? "
+            "ORDER BY step_index, event_id", (world_id,))
 
     # ---- questions ----
     def find_question(self, text: str,

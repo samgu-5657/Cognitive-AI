@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 from typing import Optional
 
+from . import matching
 from .memory import Memory
 from .ontology import Ontology
 
@@ -342,20 +343,19 @@ class Reasoner:
                 continue
             cv = self._resolve(v, bindings)
             pv = self._resolve(pg.get(k), pb)
-            if not self._is_var(cv) and not self._is_var(pv) and cv != pv:
+            if not matching.compatible(matching.legacy_term(cv),
+                                       matching.legacy_term(pv)):
                 return False
         return True
 
-    # ---- variable binding machinery ----
+    # ---- variable binding machinery (shared kernel: matching.py) ----
     @staticmethod
     def _is_var(v) -> bool:
-        return isinstance(v, str) and v.startswith("?") and len(v) > 1
+        return matching.is_variable_name(v)
 
     @staticmethod
     def _resolve(v, bindings: dict):
-        while Reasoner._is_var(v) and v in bindings:
-            v = bindings[v]
-        return v
+        return matching.resolve_legacy(bindings, v)
 
     def _kb_fact_candidates(self, cond: dict, bindings: dict,
                             state: dict, max_work: int) -> list:
@@ -500,26 +500,23 @@ class Reasoner:
             fact = f.get("fact", {})
             if fact.get("type") != cond.get("type"):
                 continue
-            delta: dict = {}
+            kb = matching.to_kernel_bindings(bindings)
+            base_keys = set(kb)
             ok = True
             for k, pv in cond.items():
                 if k == "type":
                     continue
                 pv = self._resolve(pv, bindings)
                 fv = fact.get(k, None)
-                if self._is_var(pv) and self._is_var(fv):
-                    if pv != fv:
-                        delta[pv] = fv
-                elif self._is_var(pv):
-                    if pv in delta and delta[pv] != fv:
-                        ok = False
-                        break
-                    delta[pv] = fv
-                elif self._is_var(fv):
-                    continue  # derived fact still open: no constraint
-                elif pv != fv:
+                kb = matching.unify(matching.legacy_term(pv),
+                                    matching.legacy_term(fv), kb)
+                if kb is None:
                     ok = False
                     break
+            if ok:
+                delta = {("?" + name): matching.from_kernel_value(term)
+                         for name, term in kb.items()
+                         if name not in base_keys}
             if ok:
                 out.append({"bind": delta, "status": f.get("status",
                                                            "verified"),
