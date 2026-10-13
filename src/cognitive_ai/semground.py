@@ -345,6 +345,11 @@ def _answer_verify_has(out, q, subj, mem, onto):
         out.answer = "存疑"
         out.detail = "supporting and rival evidence both kept"
         return out
+    if cons and not pros:
+        out.verdict = "conflicted"
+        out.answer = "存疑"
+        out.detail = "contested-only evidence kept, no silent unknown"
+        return out
     hit = bool(pros)
     if q.negated:
         # denial of a supported feature is contradicted; denial with
@@ -412,6 +417,11 @@ def _answer_verify_capable(out, q, subj, mem, onto):
         out.verdict = "conflicted"
         out.answer = "存疑"
         out.detail = "supporting and rival evidence both kept"
+        return out
+    if cons and not pros:
+        out.verdict = "conflicted"
+        out.answer = "存疑"
+        out.detail = "contested-only evidence kept, no silent unknown"
         return out
     if q.negated:
         if pros:

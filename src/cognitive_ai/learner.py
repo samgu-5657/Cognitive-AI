@@ -115,7 +115,16 @@ class Learner:
                     # conflict: record contested claim + evidence, do NOT overwrite.
                     # Keep the verified row untouched AND store the rival
                     # observation as a second `contested` attribute row so
-                    # check_conflicts() can see both sides.
+                    # check_conflicts() can see both sides. An identical
+                    # rival row is never stored twice, and no extra
+                    # lifecycle event is emitted for it.
+                    same = [a for a in self.mem.get_attributes(cid)
+                            if a.get("key") == k and a.get("value") == v]
+                    if same:
+                        added.append({k: {
+                            "status": same[0].get("status", "contested"),
+                            "note": "rival already recorded"}})
+                        continue
                     cl = self.mem.add_claim(
                         f"{cid}.{k}: {inherited[k]['value']} vs observed {v}",
                         subject_id=cid, status="contested", confidence=0.5)
@@ -129,6 +138,16 @@ class Learner:
                          "status": "contested"},
                         reason=f"contested evidence for {cid}.{k}",
                         evidence=[{"observation": obs}])
+                    for row in self.mem.get_attributes(cid):
+                        if row["key"] == k and row["status"] in (
+                                "candidate", "hypothesis", "supported",
+                                "verified"):
+                            contest_attribute(
+                                self.mem, int(row["id"]),
+                                [{"source": "nl-confirm",
+                                  "excerpt": obs.get("utterance", name)}],
+                                f"nl-confirm: rival '{v}' vs "
+                                f"'{inherited[k]['value']}'; row untouched")
                     added.append({k: {"status": "contested", "claim_id": cl}})
             result["updated_concept"] = {"id": cid, "added": added}
         # evaluate: did conflicts grow?

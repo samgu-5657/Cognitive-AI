@@ -34,7 +34,13 @@ README 讲这个项目是什么，这里记录做到哪一步、实测结果怎�
 | 中文问题理解与只读查询（9 式切片，supported/conflicted/unknown/ambiguous/failure） | `semparse.py`, `semground.py`, `cli.py` | `test_ask_m3d.py` |
 | 语义驱动中文回答生成（AnswerSemantics + 可组合表达库存，hypothesis/contested/inherited/unknown/limited/ambiguous/failure 分别表达，空答案守卫，生成后语义回查；默认/`--json`/`--trace`/`--json --trace` 同一次查询，CLI 单次 `answer_question()`） | `semrealize.py`, `semground.py`, `models.py`, `cli.py` | `test_realize_m3e.py` |
 
-全量测试：`pytest -q` → 装了 torch 时 171 passed（144 旧 + 27 新，0 skipped，torch 2.9.1，`py -m pytest -q` 实测）；M3E 相关（`test_realize_m3e.py` + `test_ask_m3d.py`）40 passed。
+全量测试：`pytest -q` → 装了 torch 时 180 passed（171 旧 + 9 新，0 skipped，torch 2.9.1，`py -m pytest -q` 实测）；M3E 相关（`test_realize_m3e.py` + `test_ask_m3d.py`）40 passed。
+
+### M3F-FIX-01（contested 统一 + 生命周期审计，实测）
+
+- 验证式问句遇到仅 contested 的相关证据时判 `conflicted/存疑`，不再静默 unknown；无记录仍 unknown（`semground.py:_answer_verify_has/_answer_verify_capable`，仅相关实体/键/对象参与）。
+- 中文确认产生冲突行时，经 `lifecycle.contest_attribute` 记一条 `verified→contested` 事件（旧行不动）；相同对手值不重复建行、不重复记事件（`learner.py:learn_from_observation`）。
+- 测试 `tests/test_m3f_fix01.py` 9 项（开放/验证同争议、无记录未知、双方保留、hypothesis 不升级、无关 contested 隔离、事件落库、CLI 可读、重启保持、重复确认幂等）。
 
 M3E 限制（实测确认，未解决的不宣称解决）：
 - `failure` 没有自然问句可触发的端到端路径，只验证了表达器分支（`test_m3e_fix04_failure_mapping`）。
