@@ -1,55 +1,59 @@
 # Cognitive AI
+> **项目名说明：** “Cognitive AI” 容易让人联想到具备认知、理解、推理或自主学习能力的人工智能系统。本项目目前并不具备这些广义能力；项目名表示探索方向，不是功能承诺。它实际是一个基于 Python 标准库和 SQLite 的符号化概念知识库，以及一个可选的、从随机初始化开始训练的字符级文本分类器。
 
-一个用 Python 标准库 + SQLite 写的**符号化概念知识库**，外加一个可选的、从随机初始化开始训练的
-**字符级 CNN 文本分类器**。不使用任何预训练模型或在线 LLM。
+本项目不使用预训练模型或在线 LLM。当前功能、实测结果和历史清理记录见 [PROGRESS.md](PROGRESS.md)。
+## 项目定位
 
-项目名里的 "Cognitive" 只是一个目标方向，不代表现有代码具备认知、理解或推理能力。
-进度、实测数字和已移除的部分见 [PROGRESS.md](PROGRESS.md)。
+项目由两个相互独立的部分组成：
 
-## 它实际是什么
+1. **概念知识库**：保存概念、属性、关系、规则和证据，提供有限的继承、查询、学习和版本管理能力。
+2. **可选神经分类器**：对手写的中文短词和短句进行字符级分类。它不是图像模型，也不是中文理解模型；它只通过 `candidate` Claim 与知识库连接，知识库的核心功能不依赖 PyTorch。
+知识库中的更新需要区分三种情况：
 
-**1. 概念知识库（`src/cognitive_ai/`，无第三方依赖）**
+- **情景记录**：向 `experiences` 表插入一条观察记录。
+- **知识结构修改**：改变概念、属性、关系或规则，并生成版本号，可回滚。
+- **神经网络参数更新**：只有手动执行 `neural-*` 训练命令才会发生，从随机初始化开始训练。
 
-- 概念存在 SQLite 里，支持多重继承（带环检测），属性沿祖先链继承，离得最近的定义优先。
-- 一个很小的前向规则引擎：条件只有 `is_a` / `has_attr` / `relation` 三种，支持例外条件；
-  缺数据时返回 `unknown`，不会去猜。
-- 结构修改（加概念、改父类、拆分/合并类别等）都会先存快照、跑回归检查，再生成新版本号，
-  之后可以回滚到任意一个版本。
-- 每条属性带状态：`candidate → hypothesis → supported → verified`，另有
-  `contested / rejected / superseded`。自动流程最高只能写到 `hypothesis`，
-  再往上必须显式调用 `promote`。
-- "自主探索"：根据知识缺口（缺属性、没关系、孤立概念、冲突）生成问题，然后在本地 `data/corpus/`
-  的 3 个小文本文件里做关键词检索，用正则抽出 `key: value` / `key是value`。
-  必须有 ≥2 个独立来源（按内容哈希 + 摘录相似度去重）给出同一个短值，才会以 `hypothesis` 写入。
-  每次运行都有步数和时间上限。
-- 按属性重合度给结构化观察打分，结论是 `match / ambiguous / novel / insufficient` 之一。
+## 核心能力
 
-**2. 神经分类器（`src/cognitive_ai/neural/`，需要 PyTorch）**
+### 概念知识库
 
-- 字符嵌入 → 1-D 卷积（核宽 2/3/4）→ max-pool → 两个输出头（5 个一级类别 + 二级类别）。
-  另附一个双向 GRU 用来对比。
-- 训练数据是手写的中文短词/短句：train 174 / val 54 / test 77（`data/neural/`），
-  按语义组划分，训练前会检查有没有组泄漏。
-- 测试集上一级准确率 0.42，**比手写关键词基线（0.435）还低**。详见 PROGRESS.md。
-- 外围工具：未知样本隔离队列（模型预测不会自动变成标签）、人工审核、增量训练（新样本 + 旧样本回放）、
-  回归门禁（指针切换，不覆盖旧权重，可回滚）、OOD 判定、候选类别发现。
-- 网络输出只会以 `candidate` Claim 的形式进库，不会直接改属性或版本。
+核心代码位于 `src/cognitive_ai/`，运行时不需要第三方依赖。
 
-注意：这个 CNN 处理的是汉字序列（文本分类），不是图像。它和知识库之间只通过 `candidate` Claim 连接，
-知识库的任何功能都不依赖它。
+- 概念支持多重继承，并进行环检测；属性沿祖先链继承，距离最近的定义优先。
+- 规则引擎支持 `is_a`、`has_attr` 和 `relation` 三种条件，并支持例外条件。数据不足时返回 `unknown`，不会用猜测代替缺失信息。
+- 概念结构修改先保存快照、执行回归检查，再生成新版本；版本可以回滚。高影响修改由 `SchemaEvolver` 统一处理。
+- 属性拥有生命周期：`candidate → hypothesis → supported → verified`，并支持 `contested`、`rejected`、`superseded`。自动流程最多写入 `hypothesis`，更高状态必须显式调用 `promote`。
+- 观察可以按属性重合度分类为 `match`、`ambiguous`、`novel` 或 `insufficient`。
+- 探索循环会从缺少属性、缺少关系、孤立概念和冲突中生成问题，并受步数和时间预算限制。
+- 本地研究流程在 `data/corpus/` 中做关键词匹配，再用正则抽取 `key: value` 或 `key是value`。至少需要两个独立来源给出相同的短值，才会把结果写成 `hypothesis`；只有一个来源时只保留 `candidate` Claim。
 
-## 它不是什么
+这些能力是结构化数据处理和有限规则推理，不等同于开放域知识获取、自然语言理解或通用推理。
 
-- 它不懂中文。自由文本输入只支持 `X是Y` / `X有Y` / `X可以Z` 三个正则（`cli parse`），
-  其余输入都需要写成结构化 JSON。
-- 它不做语义检索。"研究"就是在约 1 KB 的本地文本里做关键词匹配加正则抽取；"独立来源"
-  判断只能识别逐字复制和轻度改写。
-- 它不是在持续学习。知识库的更新就是往数据库插行、改状态；神经网络只有在你手动跑训练命令时才会更新。
-- `WebSearchProvider` 只是个接口，调用时直接抛 `NotImplementedError`。
+### 字符级神经分类器
 
-## 安装与运行
+代码位于 `src/cognitive_ai/neural/`，安装可选的 PyTorch 依赖后使用。
 
-需要 Python ≥ 3.12。Windows 上把 `python` 换成 `py`。
+- CNN 结构为字符嵌入、核宽为 2/3/4 的一维卷积、最大池化和两个输出头（5 个一级类别及二级类别）；另有双向 GRU 用于对比。
+- 训练数据是手写的中文短词和短句，按语义组划分训练、验证和测试集，并在训练前检查组泄漏。
+- 模型从随机初始化开始训练，不使用预训练权重。
+- 未知样本可以进入隔离队列，等待人工审核；支持增量训练、旧样本回放、回归门禁、活动模型指针、回滚、OOD 判定和候选类别发现。
+- 网络输出只能作为 `candidate` Claim 进入知识库，不会直接修改属性或知识库版本。
+
+当前数据规模较小，CNN 的一级测试表现低于手写关键词基线；因此这部分目前适合用于实验和流程验证，不适合宣称具有可靠的中文分类或理解能力。可复现实测数字见 [PROGRESS.md](PROGRESS.md)。
+
+## 明确的边界与局限
+
+- 自由文本只支持 `X是Y`、`X有Y`、`X可以Z` 三种正则句式，对应 `cli parse`；其他输入需要使用结构化 JSON。
+- 系统不理解中文语义。字符级分类器学习的是有限数据集中的字符模式，不是语言模型。
+- 系统不进行语义检索。所谓“研究”只是在约 1 KB 的本地文本中做关键词匹配和正则抽取；独立来源判断主要能识别逐字复制和轻度改写。
+- 系统不是持续学习系统。知识库更新是数据库插入和状态变化；神经网络只有在手动执行训练命令时才更新。
+- `WebSearchProvider` 目前只是接口，调用会直接抛出 `NotImplementedError`；它没有联网能力，也没有现成的在线来源审核方案。
+- 评测集和对照实验每组只有 3–12 个样本，结果只能说明代码路径能够运行，不能证明学习带来稳定增益。
+
+## 安装
+
+需要 Python ≥ 3.12。Windows 上将 `python` 替换为 `py`。
 
 ```bash
 pip install -e ".[test]"          # 核心 + pytest
@@ -57,9 +61,12 @@ pip install -e ".[neural]"        # 可选：PyTorch，神经分类器要用
 pytest -q
 ```
 
-默认数据库是 `data/cognitive.db`，第一次运行时用 `data/concepts.json` 初始化。
-想在隔离环境里跑，可以设置 `COGNITIVE_AI_DATA`（目录里要有 `concepts.json` 和 `corpus/`）
-和 `COGNITIVE_AI_MODELS`。
+默认数据库为 `data/cognitive.db`，首次运行时使用 `data/concepts.json` 初始化。要在隔离环境中运行，可设置：
+
+- `COGNITIVE_AI_DATA`：数据目录，必须包含 `concepts.json` 和 `corpus/`。
+- `COGNITIVE_AI_MODELS`：神经网络权重和活动模型指针所在目录。
+
+## 使用方式
 
 ### 知识库命令
 
@@ -88,7 +95,9 @@ python -m cognitive_ai.cli experiences --limit 20
  "attributes": {"material": "clay", "function": "brewing"}}
 ```
 
-### 神经网络命令（需要 torch）
+### 神经网络命令
+
+以下命令需要安装 PyTorch：
 
 ```bash
 python -m cognitive_ai.cli neural-train --model cnn --tag cnn-v1 --seed 7 --epochs 300
@@ -108,7 +117,7 @@ python -m cognitive_ai.cli neural-rollback
 python -m cognitive_ai.cli neural-discover --tag cnn-v1
 ```
 
-权重保存在 `models/`，不提交到仓库。
+权重保存在 `models/`，不会提交到仓库。OOD 阈值只使用训练集和验证集确定，测试集只用于报告结果。
 
 ## 代码结构
 
@@ -129,13 +138,50 @@ python -m cognitive_ai.cli neural-discover --tag cnn-v1
 | `cli.py` | 命令行入口，不放业务逻辑 |
 | `neural/` | 词表、数据集、模型、训练、评测、适配器、队列、门禁、OOD、类别发现 |
 
-## 已知问题
+## 当前已知问题
 
-- 回归门 `learner.default_regression` 只检查"没有环"和"`cup` 仍是 `container` 的后代"，
-  和种子数据绑得很死，算不上真正的回归测试。
-- `curiosity.IMPORTANT_CONCEPTS` 写死了 4 个种子概念 id，用来加相关性分。
-- `classify` 的打分是手写公式，阈值 0.3 是拍出来的。
-- 评测集和对照实验每组只有 3–12 个样本，只能当冒烟测试看，不能作为结论。
+以下问题不影响基本运行，但会限制系统的泛化能力：
+
+- `learner.default_regression` 只检查“没有环”和“`cup` 仍是 `container` 的后代”，与种子数据绑定较紧，尚不是真正通用的回归测试。
+- `curiosity.IMPORTANT_CONCEPTS` 写死了 4 个种子概念 ID，用来增加相关性分。
+- `classify` 使用手写评分公式，阈值 `0.3` 尚未通过系统校准。
+- 神经网络数据量过小，继续调模型的收益有限，优先级应是扩充训练数据。
+
+## 保留信息：历史清理与暂未实现内容
+
+本栏集中保留在文档重构中不宜丢失的历史信息。2026-10-12 清理时移除了约 1.2 万行代码和 34 个测试文件；旧版本可在 git 历史 `6732730` 及之前的提交中查看。
+
+### 已移除的模块及原因
+
+| 移除内容 | 原来的说法 | 实际情况 |
+|---|---|---|
+| `interact.py`（chat REPL） | 交互教学 | 1300 多行的中文命令分发，把多个模块串在一起 |
+| `semantics.py`、`phraselearn.py`、`semlearn.py`、`constructions.py`、`verbalize.py`、`dialog.py` | 组合式中文理解、可学习语义、双向构式、多轮对话 | 正则槽位模板，以及从示例归纳的前缀 / 后缀字符串改写规则 |
+| `cognitive_cycle.py`、`metacog.py`、`executor.py`、`cogtask.py`、`cog_planners.py`、`operations.py`、`explainer.py`、`answers.py`、`verify.py` | 统一认知循环、元认知、独立验证 | 按正则把输入分到“数学 / 逻辑 / 概念”路径，再按失败原因字符串分支 |
+| `analogy.py` | 结构类比迁移 | 比较执行轨迹的目标类型、操作名序列和槽位键的重合度 |
+| `chainreason.py` | 多步证明链 | 可对带变量的规则做有深度上限的证明搜索，但只被已删除的执行器调用；现有种子规则也都是具体规则 |
+| `rulelearn.py`、`learnloop.py` | 可学习认知技能 | 从示例拟合受限 DSL 中的仿射、取模、单属性合取和决策表规则，用例是数值或玩具状态 |
+| `world.py` | 开放式学习闭环微世界 | 一张写死的 3 状态 × 2 动作转移表 |
+| `mathengine.py` | 自研符号引擎 | 四则运算、一元一次方程和多项式求导，与项目主题无关 |
+| `web/` | 本地认知工作台 | FastAPI + 原生前端，主要包裹已删除的模块 |
+| `neural/intent.py`、`data/semantics/` | 意图网 | 只服务于已删除的正则解析器，测试准确率 0.745，仍不如规则 |
+| `neural/continual.py` | 3B 预留 | 已由 `queue.py`、`gate.py` 和 `cycle.py` 取代，当前没有代码调用 |
+
+### 清理时修复的事项
+
+- 删除了 `learner.classify` 中重复的导入和赋值，以及 `consolidate` 末尾永远无法执行的代码。
+- 修正多个 neural CLI 命令，使其读取 `COGNITIVE_AI_MODELS`，不再写死 `ROOT/models`。
+- 增加 `neural-ood-build`，解决 OOD 文件此前没有生成命令的问题。
+- 将 `test_migration.py` 改为在测试中构造旧版数据库，不再依赖作者本机的 Windows 临时文件。
+- 为 `test_neural_3c.py` 中依赖 torch 的测试增加跳过标记，未安装 torch 时不会直接失败。
+- 修正与代码不符的注释：OOD 实际使用原始概率，评测基线是手写关键词表而不是“符号解析器”。
+
+### 只有接口或计划中的内容
+
+- `research.WebSearchProvider` 只有接口，调用会抛 `NotImplementedError`。
+- 计划将回归门改为基于种子数据和历史快照的通用检查。
+- 计划让 `curiosity.IMPORTANT_CONCEPTS` 可配置，或改为从数据计算。
+- 计划扩充神经网络训练数据；在数据规模不变时，继续调参缺少实际意义。
 
 ## 许可证
 
