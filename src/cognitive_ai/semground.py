@@ -236,9 +236,18 @@ def _answer_open_attr(out, q, subj, mem, onto, key):
             out.evidence.append(_ev("attribute", other[2], "contested",
                                     f"rival value kept: {other[0]}"))
     for f in _derived_for(mem, subj, key):
+        if f.get("limited"):
+            out.queries.append({"op": "chain_limited", "concept": subj})
+            out.limited = True
+            out.detail = (out.detail + "；推理搜索受限，未完成验证" if out.detail
+                          else "推理搜索受限，未完成验证")
+            continue
         vals.append((f["value"], f["status"], f["ref"]))
         out.evidence.append(_ev("rule", f["ref"], f["status"], f["why"]))
     if not vals:
+        if out.limited:
+            out.detail = out.detail + f"；no {key} recorded for {subj}"
+            return out
         out.detail = f"no {key} recorded for {subj}"
         return out
     uniq = {str(v) for v, _, _ in vals}
@@ -250,7 +259,10 @@ def _answer_open_attr(out, q, subj, mem, onto, key):
     v, s, _ = vals[0]
     out.verdict = "supported"
     out.answer = str(v)
-    out.detail = f"value status kept as {s}"
+    if out.limited:
+        out.detail = out.detail + f"；value status kept as {s}"
+    else:
+        out.detail = f"value status kept as {s}"
     return out
 
 
@@ -264,10 +276,18 @@ def _answer_open_has(out, q, subj, mem, onto):
         rels = mem.get_relations(src_id=subj)
     except Exception:
         rels = []
-    derived = _derived_for(mem, subj, "")
+    _all_derived = _derived_for(mem, subj, "")
+    if any(f.get("limited") for f in _all_derived):
+        out.queries.append({"op": "chain_limited", "concept": subj})
+        out.limited = True
+        out.detail = "推理搜索受限，未完成验证"
+    derived = [f for f in _all_derived if not f.get("limited")]
     for f in derived:
         out.evidence.append(_ev("rule", f["ref"], f["status"], f["why"]))
     if not inh and not rels and not derived:
+        if out.limited:
+            out.detail = out.detail + f"；nothing recorded for {subj}"
+            return out
         out.detail = f"nothing recorded for {subj}"
         return out
     for key, row in inh.items():
@@ -286,8 +306,9 @@ def _answer_open_has(out, q, subj, mem, onto):
                          for r in rels) if rels else "") + (
         "；" + "、".join(f"推导:{f['value']}@{f['ref']}" for f in derived)
         if derived else "")
-    out.detail = f"{len(inh)} attribute(s), {len(rels)} relation(s), " \
-        f"{len(derived)} derived"
+    if not out.detail.startswith("推理搜索受限"):
+        out.detail = f"{len(inh)} attribute(s), {len(rels)} relation(s), " \
+            f"{len(derived)} derived"
     return out
 
 
@@ -438,14 +459,23 @@ def _rival_attr_values(mem, onto, cid, key, value):
 
 
 def _derived_for(mem, subj, key):
-    """Rule-derived (concept, key) values with rule/binding/status."""
+    """Rule-derived (concept, key) values with rule/binding/status.
+
+    A budget/cap marker from the engine is kept as a pseudo-entry
+    {"limited": True} so callers can tell truncated search apart from
+    genuine absence of evidence.
+    """
     out = []
     try:
         from .reasoner import Reasoner
         fired = Reasoner(mem).forward_chain()
     except Exception:
         return out
+    if any(f.get("limited") for f in fired):
+        out.append({"limited": True})
     for f in fired:
+        if f.get("limited"):
+            continue
         conc = f.get("conclusion")
         if not isinstance(conc, dict) or conc.get("type") != "has_attr":
             continue

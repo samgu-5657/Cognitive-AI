@@ -32,8 +32,14 @@ README 讲这个项目是什么，这里记录做到哪一步、实测结果怎�
 | 只读语义接地（supported/conflicted/unknown/ambiguous + 证据） | `semground.py`, `models.py` | `test_semground_m3b.py` |
 | 中文陈述候选学习（learn/confirm/reject/pending，经现有生命周期门禁） | `learner.py`, `memory.py`, `cli.py` | `test_learn_nl_m3c.py` |
 | 中文问题理解与只读查询（9 式切片，supported/conflicted/unknown/ambiguous/failure） | `semparse.py`, `semground.py`, `cli.py` | `test_ask_m3d.py` |
+| 语义驱动中文回答生成（AnswerSemantics + 可组合表达库存，hypothesis/contested/inherited/unknown/limited/ambiguous/failure 分别表达，空答案守卫，生成后语义回查；默认/`--json`/`--trace`/`--json --trace` 同一次查询，CLI 单次 `answer_question()`） | `semrealize.py`, `semground.py`, `models.py`, `cli.py` | `test_realize_m3e.py` |
 
-全量测试：`pytest -q` → 装了 torch 时 144 passed（131 旧 + 13 新）；没装 torch 时 124 passed、20 skipped。
+全量测试：`pytest -q` → 装了 torch 时 171 passed（144 旧 + 27 新，0 skipped，torch 2.9.1，`py -m pytest -q` 实测）；M3E 相关（`test_realize_m3e.py` + `test_ask_m3d.py`）40 passed。
+
+M3E 限制（实测确认，未解决的不宣称解决）：
+- `failure` 没有自然问句可触发的端到端路径，只验证了表达器分支（`test_m3e_fix04_failure_mapping`）。
+- 父子链接本身无可信度状态，纯继承证据只能报来源（“通过类别继承得到”），不能报已验证。
+- 只覆盖有限句型的确定性表达，不支持任意自然中文。
 
 ### 只有接口
 

@@ -209,6 +209,7 @@ class GroundingVerdict:
     question: dict = field(default_factory=dict)
     answer: str = ""
     is_yesno: bool = False
+    limited: bool = False
 
     def to_dict(self) -> dict:
         return asdict(self)

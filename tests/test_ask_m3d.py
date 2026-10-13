@@ -233,7 +233,7 @@ def test_read_only_and_restart(tmp_path):
                   len(mem.query("SELECT * FROM concepts")))
     finally:
         mem.close()
-    u = cli(data, "ask", "杯子有什么用途？")
+    u = cli(data, "ask", "--json", "杯子有什么用途？")
     assert u["verdict"] == "supported", u
     assert "drinking" in u["answer"], u
     mem = _M(str(data / "cognitive.db"))
@@ -244,15 +244,15 @@ def test_read_only_and_restart(tmp_path):
         assert before == after
     finally:
         mem.close()
-    u = cli(data, "ask", "杯子有什么用途？")
+    u = cli(data, "ask", "--json", "杯子有什么用途？")
     assert u["verdict"] == "supported" and "drinking" in u["answer"], u
 
 
 def test_cli_ask_entry(tmp_path):
     data = fresh_data(tmp_path, tag="sqd2")
-    u = cli(data, "ask", "杯子是不是容器？")
+    u = cli(data, "ask", "--json", "杯子是不是容器？")
     assert u["is_yesno"] is True and u["answer"] == "是", u
     assert u["verdict"] == "supported", u
     assert "question" in u and "evidence" in u, u
-    u = cli(data, "ask", "花钱如流水吗？")
+    u = cli(data, "ask", "--json", "花钱如流水吗？")
     assert u["verdict"] in ("unknown", "ambiguous"), u

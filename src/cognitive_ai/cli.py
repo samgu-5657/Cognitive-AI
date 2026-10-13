@@ -166,12 +166,43 @@ def cmd_understand(a):
 
 
 def cmd_ask(a):
-    """Read-only: answer one Chinese question, print the verdict."""
+    """Read-only: answer one Chinese question.
+
+    Exactly one answer_question() call per invocation. Default prints
+    only the composed Chinese text; --json prints one parseable JSON
+    document (the full verdict dict plus a "realization" block, since
+    the verdict already carries question/queries/evidence); --trace
+    prints the same Chinese text, a "== trace ==" separator, then the
+    diagnostic JSON. --json --trace still prints one JSON document.
+    """
     from cognitive_ai.semground import answer_question
+    from cognitive_ai.semrealize import build_answer_semantics, realize
     mem = get_memory()
     try:
-        print(json.dumps(answer_question(a.sentence, mem).to_dict(),
-                         ensure_ascii=False, indent=2, default=str))
+        doc = answer_question(a.sentence, mem).to_dict()
+        sem = build_answer_semantics(doc)
+        out = realize(sem)
+        if getattr(a, "json", False):
+            payload = dict(doc)
+            payload["realization"] = {
+                "text": out.get("text", ""),
+                "constructions": out.get("constructions", []),
+                "roundtrippable": out.get("roundtrippable", False),
+            }
+            print(json.dumps(payload, ensure_ascii=False, indent=2,
+                             default=str))
+            return
+        print(out["text"])
+        if getattr(a, "trace", False):
+            print("== trace ==")
+            print(json.dumps({"question": doc.get("question", {}),
+                              "queries": doc.get("queries", []),
+                              "evidence": doc.get("evidence", []),
+                              "constructions": out.get("constructions",
+                                                       []),
+                              "roundtrippable": out.get("roundtrippable",
+                                                        False)},
+                             ensure_ascii=False, indent=2, default=str))
     finally:
         mem.close()
 
@@ -602,7 +633,7 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("pending"); s.add_argument("--status", default=None); s.set_defaults(fn=cmd_pending)
     s = sub.add_parser("parse"); s.add_argument("sentence"); s.set_defaults(fn=cmd_parse)
     s = sub.add_parser("understand"); s.add_argument("sentence"); s.set_defaults(fn=cmd_understand)
-    s = sub.add_parser("ask"); s.add_argument("sentence"); s.set_defaults(fn=cmd_ask)
+    s = sub.add_parser("ask"); s.add_argument("sentence"); s.add_argument("--json", action="store_true"); s.add_argument("--trace", action="store_true"); s.set_defaults(fn=cmd_ask)
     s = sub.add_parser("query"); s.add_argument("--json", default=None); s.add_argument("--json-file", default=None); s.set_defaults(fn=cmd_query)
     sub.add_parser("gaps").set_defaults(fn=cmd_gaps)
     sub.add_parser("questions").set_defaults(fn=cmd_questions)
