@@ -1,0 +1,19 @@
+{
+  "name": "cognitive-ai-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Bun + React + Beer CSS (Material 3) frontend for the Cognitive AI local web API",
+  "scripts": {
+    "dev": "bun --hot server.js",
+    "start": "NODE_ENV=production bun server.js",
+    "build": "bun build ./src/index.html --outdir ./dist --minify",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "beercss": "5.0.3",
+    "material-dynamic-colors": "1.1.4",
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
+  }
+}
