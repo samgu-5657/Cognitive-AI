@@ -36,6 +36,26 @@ CLASSIFY_MATCH_THRESHOLD = 0.3
 # Upper bound on genuinely NEW questions persisted per generate() call.
 MAX_NEW_QUESTIONS_PER_STEP = 10
 
+# Multi-step rule chaining (Reasoner.forward_chain): max proof depth,
+# max bindings kept per rule, and total candidate-evaluation budget.
+# Depth bounds termination outright; visited/duplicate pruning and the
+# work cap stop equivalent-path explosion. All caps live here so logic
+# modules never define their own thresholds.
+MAX_CHAIN_DEPTH = 4
+MAX_CHAIN_BINDINGS = 200
+MAX_CHAIN_WORK = 5000
+
+# Compositional statement parsing (semcompose): max nesting depth of
+# the semantic tree and max total nodes in one parse. Over-limit
+# input yields an explicit incomplete result, never silent truncation.
+MAX_SEMCOMPOSE_DEPTH = 4
+MAX_SEMCOMPOSE_NODES = 15
+
+# Explicit semantic context (semcontext): cap on retained mentions per
+# context object. Overflow keeps the newest mentions and records that
+# trimming happened; callers must never assume dropped mentions exist.
+MAX_SEMANTIC_CONTEXT_MENTIONS = 32
+
 # Generic English tokens that carry no topical signal. They are excluded
 # from evidence ranking so that every document does not match every query.
 STOPWORDS = frozenset({

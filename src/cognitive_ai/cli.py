@@ -100,8 +100,304 @@ def cmd_observe(a):
     mem.close()
 
 
+def cmd_learn(a):
+    """Propose a learning candidate from one Chinese statement.
+
+    Writes exactly one pending_candidates row, nothing else."""
+    from cognitive_ai.learner import Learner
+    mem = get_memory()
+    try:
+        out = Learner(mem, CORPUS).propose_from_utterance(a.sentence)
+        print(json.dumps(out, ensure_ascii=False, indent=2, default=str))
+    finally:
+        mem.close()
+
+
+def cmd_confirm(a):
+    """Apply a proposed candidate through the existing gates."""
+    from cognitive_ai.learner import Learner
+    mem = get_memory()
+    try:
+        print(json.dumps(Learner(mem, CORPUS).confirm_candidate(a.id),
+                         ensure_ascii=False, indent=2, default=str))
+    finally:
+        mem.close()
+
+
+def cmd_reject(a):
+    """Drop a proposed candidate. Only its status flips."""
+    from cognitive_ai.learner import Learner
+    mem = get_memory()
+    try:
+        print(json.dumps(Learner(mem, CORPUS).reject_candidate(a.id),
+                         ensure_ascii=False, indent=2, default=str))
+    finally:
+        mem.close()
+
+
+def cmd_pending(a):
+    from cognitive_ai.learner import Learner
+    mem = get_memory()
+    try:
+        print(json.dumps(Learner(mem, CORPUS).list_pending_candidates(
+            a.status), ensure_ascii=False, indent=2, default=str))
+    finally:
+        mem.close()
+
+
+def cmd_import_data(a):
+    """Batch import: preview is read-only, stage files candidates."""
+    from cognitive_ai.knowledge_import import preview_import, stage_import
+    from cognitive_ai.learner import Learner
+    mem = get_memory()
+    try:
+        preview = preview_import(a.path, mem)
+        if getattr(a, "mode", "preview") != "stage":
+            print(f"import {preview.file_id}: {preview.format} "
+                  f"lines={preview.total_lines} "
+                  + " ".join(f"{k}={preview.counts.get(k, 0)}"
+                              for k in ("ready_for_candidate",
+                                        "already_known",
+                                        "duplicate_in_batch",
+                                        "unsupported", "ambiguous",
+                                        "conflicted", "unknown",
+                                        "invalid_input")))
+            if preview.error:
+                print(f"error: {preview.error}")
+            for it in preview.items:
+                print(f"[L{it.line_no} {it.category}] {it.text} "
+                      f"-- {it.reason} (src {it.source_id})")
+            return
+        out = stage_import(preview, Learner(mem, CORPUS), mem)
+        print(f"staged {out['staged']} skipped {out['skipped']} "
+              f"failed {out['failed']} from {out['file_id']}")
+        for r in out["results"]:
+            extra = f" candidate=#{r['candidate_id']}" \
+                if r["outcome"] == "staged" else ""
+            print(f"[L{r['line_no']} {r['outcome']}] {r['text']}"
+                  f"{extra} -- {r['reason']}")
+    finally:
+        mem.close()
+
+
 def cmd_parse(a):
-    print(json.dumps(parse_chinese_simple(a.sentence), ensure_ascii=False, indent=2))
+    mem = get_memory()
+    try:
+        print(json.dumps(parse_chinese_simple(a.sentence, mem),
+                         ensure_ascii=False, indent=2))
+    finally:
+        mem.close()
+
+
+def cmd_semantic_parse(a):
+    """Read-only: show the compositional semantic tree of one statement."""
+    from cognitive_ai.semcompose import parse_compositional_statement
+    mem = get_memory()
+    try:
+        res = parse_compositional_statement(a.text, mem)
+
+        def show(node, indent=0):
+            pad = "  " * indent
+            print(f"{pad}{node.kind}: {node.raw_text!r}")
+            if node.kind == "atom":
+                atom = node.atom
+                print(f"{pad}  subject={atom.get('subject')!r} "
+                      f"predicate={atom.get('predicate')!r} "
+                      f"object={atom.get('object')!r}")
+            if node.connective:
+                print(f"{pad}  connective={node.connective!r}")
+            if node.roles:
+                print(f"{pad}  roles={list(node.roles)!r}")
+            if node.diagnosis:
+                print(f"{pad}  diagnosis={node.diagnosis!r}")
+            for child in node.children:
+                show(child, indent + 1)
+
+        print(f"input: {res.raw_input!r}")
+        if res.tree is None:
+            print("tree: none")
+        else:
+            show(res.tree)
+        print(f"complete: {res.complete}")
+        print(f"atoms: {res.atom_count} composites: {res.composite_count}")
+        for diag in res.diagnostics:
+            print(f"diagnostic: {diag}")
+    finally:
+        mem.close()
+
+
+def cmd_semantic_analyze(a):
+    """Read-only: ground a compositional statement node by node."""
+    from cognitive_ai.semmeaning import understand_compositional_statement
+    mem = get_memory()
+    try:
+        rep = understand_compositional_statement(a.text, mem)
+
+        def show(node, indent=0):
+            pad = "  " * indent
+            print(f"{pad}{node.kind} [{node.status}]: {node.raw_text!r}")
+            if node.kind == "atom":
+                print(f"{pad}  verdict={node.grounding.get('verdict')!r} "
+                      f"limited={node.limited!r}")
+                for ref in node.source_refs:
+                    print(f"{pad}  evidence={ref!r}")
+            if node.roles:
+                print(f"{pad}  roles={list(node.roles)!r}")
+            for diag in node.diagnostics:
+                print(f"{pad}  diagnostic={diag!r}")
+            for child in node.children:
+                show(child, indent + 1)
+
+        print(f"input: {rep.raw_input!r}")
+        print(f"parse_complete: {rep.parse.complete if rep.parse else False} "
+              f"understand_complete: {rep.complete}")
+        if rep.root is None:
+            print("tree: none")
+        else:
+            show(rep.root)
+        print(f"grounded_atoms: {rep.grounded_atoms}")
+        for diag in rep.diagnostics:
+            print(f"diagnostic: {diag}")
+    finally:
+        mem.close()
+
+
+def cmd_semantic_context(a):
+    """Read-only: build memory context from priors, analyze with it."""
+    from cognitive_ai.semcontext import (empty_context,
+                                         extend_semantic_context,
+                                         understand_with_context)
+    from cognitive_ai.semmeaning import understand_compositional_statement
+    mem = get_memory()
+    try:
+        context = empty_context()
+        for prior in getattr(a, "prior", []) or []:
+            analyzed = understand_compositional_statement(prior, mem)
+            context = extend_semantic_context(context, analyzed, mem)
+        print(f"context_seq: {context.sequence} "
+              f"mentions: {len(context.mentions)} "
+              f"trimmed: {context.trimmed}")
+        for mention in context.mentions:
+            print(f"mention #{mention.order}: "
+                  f"{mention.mention_text!r} -> "
+                  f"{mention.object_ref.ref_id!r} "
+                  f"[{mention.object_ref.kind}]")
+        rep = understand_with_context(a.text, mem, context)
+        print(f"input: {rep.raw_input!r}")
+        print(f"normalized: {rep.normalized_text!r}")
+        print(f"complete: {rep.complete}")
+        for resolution in rep.resolutions:
+            print(f"reference {resolution.mention!r}: "
+                  f"{resolution.status} -- {resolution.reason}")
+            for cand in resolution.candidates:
+                print(f"  candidate: {cand.ref_id!r} [{cand.kind}]")
+        if rep.understanding is not None:
+            print(f"grounded_atoms: "
+                  f"{rep.understanding.grounded_atoms}")
+        for diag in rep.diagnostics:
+            print(f"diagnostic: {diag}")
+    finally:
+        mem.close()
+
+
+def cmd_semantic_interact(a):
+    """Read-only debug: begin interaction, optionally answer one pick."""
+    from cognitive_ai.semcontext import (empty_context,
+                                         extend_semantic_context)
+    from cognitive_ai.seminteraction import (
+        answer_semantic_clarification, begin_semantic_interaction)
+    from cognitive_ai.models import SemanticClarificationAnswer
+    from cognitive_ai.semmeaning import understand_compositional_statement
+    mem = get_memory()
+    try:
+        context = empty_context()
+        for prior in getattr(a, "prior", []) or []:
+            analyzed = understand_compositional_statement(prior, mem)
+            context = extend_semantic_context(context, analyzed, mem)
+        first = begin_semantic_interaction(a.text, mem, context)
+        print(f"state: {first.state}")
+        if first.request is not None:
+            print(f"request: {first.request.request_id} "
+                  f"[{first.request.kind}]")
+            print(f"question: {first.request.question}")
+            for option in first.request.options:
+                print(f"option {option.option_id}: "
+                      f"{option.display_name} "
+                      f"selectable={option.selectable}")
+        if not getattr(a, "choose", ""):
+            return
+        if first.request is None:
+            print("no clarification to answer")
+            return
+        from cognitive_ai.seminteraction import context_fingerprint
+        answer = SemanticClarificationAnswer(
+            request_id=first.request.request_id,
+            option_id=a.choose,
+            context_fingerprint=context_fingerprint(context),
+            origin="user")
+        second = answer_semantic_clarification(first.request, context,
+                                               answer, mem)
+        print(f"after answer: {second.state}")
+        if second.understanding is not None:
+            print(f"grounded_atoms: "
+                  f"{second.understanding.grounded_atoms}")
+        for diag in second.diagnostics:
+            print(f"diagnostic: {diag}")
+    finally:
+        mem.close()
+
+
+def cmd_understand(a):
+    """Read-only: parse + ground one sentence, print the verdict."""
+    from cognitive_ai.semground import ground_statement
+    mem = get_memory()
+    try:
+        print(json.dumps(ground_statement(a.sentence, mem).to_dict(),
+                         ensure_ascii=False, indent=2, default=str))
+    finally:
+        mem.close()
+
+
+def cmd_ask(a):
+    """Read-only: answer one Chinese question.
+
+    Exactly one answer_question() call per invocation. Default prints
+    only the composed Chinese text; --json prints one parseable JSON
+    document (the full verdict dict plus a "realization" block, since
+    the verdict already carries question/queries/evidence); --trace
+    prints the same Chinese text, a "== trace ==" separator, then the
+    diagnostic JSON. --json --trace still prints one JSON document.
+    """
+    from cognitive_ai.semground import answer_question
+    from cognitive_ai.semrealize import build_answer_semantics, realize
+    mem = get_memory()
+    try:
+        doc = answer_question(a.sentence, mem).to_dict()
+        sem = build_answer_semantics(doc)
+        out = realize(sem)
+        if getattr(a, "json", False):
+            payload = dict(doc)
+            payload["realization"] = {
+                "text": out.get("text", ""),
+                "constructions": out.get("constructions", []),
+                "roundtrippable": out.get("roundtrippable", False),
+            }
+            print(json.dumps(payload, ensure_ascii=False, indent=2,
+                             default=str))
+            return
+        print(out["text"])
+        if getattr(a, "trace", False):
+            print("== trace ==")
+            print(json.dumps({"question": doc.get("question", {}),
+                              "queries": doc.get("queries", []),
+                              "evidence": doc.get("evidence", []),
+                              "constructions": out.get("constructions",
+                                                       []),
+                              "roundtrippable": out.get("roundtrippable",
+                                                        False)},
+                             ensure_ascii=False, indent=2, default=str))
+    finally:
+        mem.close()
 
 
 def cmd_query(a):
@@ -517,6 +813,14 @@ def cmd_doctor(_a):
     mem.close()
 
 
+def cmd_ui(a):
+    """Start the local web UI (localhost only by default)."""
+    from cognitive_ai.web_ui import run
+    run(host=getattr(a, "host", "127.0.0.1") or "127.0.0.1",
+        port=int(getattr(a, "port", 8765) or 8765),
+        corpus_dir=CORPUS)
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="cognitive_ai",
                                 description="Cognitive AI CLI")
@@ -524,7 +828,18 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("concepts").set_defaults(fn=cmd_concepts)
     s = sub.add_parser("inspect"); s.add_argument("id"); s.set_defaults(fn=cmd_inspect)
     s = sub.add_parser("observe"); s.add_argument("--json", default=None); s.add_argument("--json-file", default=None); s.set_defaults(fn=cmd_observe)
+    s = sub.add_parser("learn"); s.add_argument("sentence"); s.set_defaults(fn=cmd_learn)
+    s = sub.add_parser("confirm"); s.add_argument("id", type=int); s.set_defaults(fn=cmd_confirm)
+    s = sub.add_parser("reject"); s.add_argument("id", type=int); s.set_defaults(fn=cmd_reject)
+    s = sub.add_parser("pending"); s.add_argument("--status", default=None); s.set_defaults(fn=cmd_pending)
+    s = sub.add_parser("import-data"); s.add_argument("mode", nargs="?", default="preview", choices=("preview", "stage")); s.add_argument("path"); s.set_defaults(fn=cmd_import_data)
     s = sub.add_parser("parse"); s.add_argument("sentence"); s.set_defaults(fn=cmd_parse)
+    s = sub.add_parser("semantic-parse"); s.add_argument("text"); s.set_defaults(fn=cmd_semantic_parse)
+    s = sub.add_parser("semantic-analyze"); s.add_argument("text"); s.set_defaults(fn=cmd_semantic_analyze)
+    s = sub.add_parser("semantic-context"); s.add_argument("--prior", action="append", default=[]); s.add_argument("text"); s.set_defaults(fn=cmd_semantic_context)
+    s = sub.add_parser("semantic-interact"); s.add_argument("--prior", action="append", default=[]); s.add_argument("--choose", default=""); s.add_argument("text"); s.set_defaults(fn=cmd_semantic_interact)
+    s = sub.add_parser("understand"); s.add_argument("sentence"); s.set_defaults(fn=cmd_understand)
+    s = sub.add_parser("ask"); s.add_argument("sentence"); s.add_argument("--json", action="store_true"); s.add_argument("--trace", action="store_true"); s.set_defaults(fn=cmd_ask)
     s = sub.add_parser("query"); s.add_argument("--json", default=None); s.add_argument("--json-file", default=None); s.set_defaults(fn=cmd_query)
     sub.add_parser("gaps").set_defaults(fn=cmd_gaps)
     sub.add_parser("questions").set_defaults(fn=cmd_questions)
@@ -597,6 +912,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--budget", type=float, default=600.0)
     s.set_defaults(fn=cmd_neural_cycle)
     sub.add_parser("doctor").set_defaults(fn=cmd_doctor)
+    s = sub.add_parser("ui"); s.add_argument("--host", default="127.0.0.1"); s.add_argument("--port", type=int, default=8765); s.set_defaults(fn=cmd_ui)
     return p
 
 

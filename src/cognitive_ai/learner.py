@@ -115,7 +115,16 @@ class Learner:
                     # conflict: record contested claim + evidence, do NOT overwrite.
                     # Keep the verified row untouched AND store the rival
                     # observation as a second `contested` attribute row so
-                    # check_conflicts() can see both sides.
+                    # check_conflicts() can see both sides. An identical
+                    # rival row is never stored twice, and no extra
+                    # lifecycle event is emitted for it.
+                    same = [a for a in self.mem.get_attributes(cid)
+                            if a.get("key") == k and a.get("value") == v]
+                    if same:
+                        added.append({k: {
+                            "status": same[0].get("status", "contested"),
+                            "note": "rival already recorded"}})
+                        continue
                     cl = self.mem.add_claim(
                         f"{cid}.{k}: {inherited[k]['value']} vs observed {v}",
                         subject_id=cid, status="contested", confidence=0.5)
@@ -129,6 +138,16 @@ class Learner:
                          "status": "contested"},
                         reason=f"contested evidence for {cid}.{k}",
                         evidence=[{"observation": obs}])
+                    for row in self.mem.get_attributes(cid):
+                        if row["key"] == k and row["status"] in (
+                                "candidate", "hypothesis", "supported",
+                                "verified"):
+                            contest_attribute(
+                                self.mem, int(row["id"]),
+                                [{"source": "nl-confirm",
+                                  "excerpt": obs.get("utterance", name)}],
+                                f"nl-confirm: rival '{v}' vs "
+                                f"'{inherited[k]['value']}'; row untouched")
                     added.append({k: {"status": "contested", "claim_id": cl}})
             result["updated_concept"] = {"id": cid, "added": added}
         # evaluate: did conflicts grow?
@@ -140,6 +159,205 @@ class Learner:
                                 {"result": _jsonable(result),
                                  "outcome": result["outcome"]})
         return result
+
+    # ---- NL candidate learning (Phase M3C) ----
+    def classify_utterance(self, text: str) -> dict:
+        """Parse + ground + map to a candidate shape. Zero writes.
+
+        Same mapping as propose_from_utterance, but creates nothing:
+        used by read-only preview flows.
+        """
+        from .semground import ground_statement
+        from .semparse import parse_statement
+        u = parse_statement(text, self.mem)
+        v = ground_statement(text, self.mem)
+        cand = {"utterance": text, "parse": u.to_dict(),
+                "grounding": v.to_dict(), "kind": "unusable",
+                "observation": {}, "can_confirm": False,
+                "reason": ""}
+        if u.ambiguity or v.verdict == "ambiguous":
+            cand["reason"] = ("ambiguous input, please clarify before "
+                              "anything is saved")
+        elif u.predicate == "unknown":
+            cand["reason"] = ("unresolvable predicate; "
+                              "nothing to save")
+        else:
+            built = self._candidate_observation(u, v)
+            if built is None:
+                cand["reason"] = ("this shape is not safely storable yet; "
+                                  "nothing saved")
+            else:
+                cand.update(built)
+        return cand
+
+    def propose_from_utterance(self, text: str,
+                               source: dict | None = None) -> dict:
+        """Parse + ground one Chinese statement into a pending candidate.
+
+        Writes exactly one pending_candidates row (status proposed) and
+        nothing else. The candidate records kind/observation/reason;
+        confirmation happens separately in confirm_candidate().
+        An optional ``source`` mapping (source_id/source_group/origin)
+        is kept inside the observation and reason for traceability; it
+        never changes the classification and never asserts truth.
+        """
+        cand = self.classify_utterance(text)
+        if source is not None and cand.get("can_confirm"):
+            obs = dict(cand.get("observation") or {})
+            obs["import_source"] = {
+                "source_id": str(source.get("source_id", "")),
+                "source_group": str(source.get("source_group", "")),
+                "origin": str(source.get("origin", "import")),
+            }
+            cand["observation"] = obs
+            cand["reason"] = (cand.get("reason") or "") + \
+                f" [src {obs['import_source']['source_id'] or '?'}]"
+        pid = self.mem.add_pending_candidate(
+            cand["kind"], text, cand["parse"],
+            cand.get("observation") or {}, cand["reason"])
+        cand["id"] = pid
+        cand["status"] = "proposed"
+        return cand
+
+    def _candidate_observation(self, u, v) -> Optional[dict]:
+        """Map a parsed+grounded utterance to a storable candidate."""
+        subj_id = (v.subject_match or {}).get("concept_id")
+        if u.predicate == "is_a":
+            obj_id = (v.object_match or {}).get("concept_id")
+            if u.negated:
+                return {"kind": "denial",
+                        "observation": {},
+                        "can_confirm": True,
+                        "reason": "negated category: denial claim only"}
+            if subj_id is None:
+                if obj_id is None:
+                    return None
+                return {"kind": "new_concept",
+                        "observation": {"name": u.subject,
+                                       "parents": [obj_id],
+                                       "attributes": {}, "relations": [],
+                                       "source": "nl-confirm",
+                                       "utterance": u.raw},
+                        "can_confirm": True,
+                        "reason": f"new concept {u.subject} under {obj_id}"}
+            if obj_id is None:
+                return None
+            if self.onto.is_a(subj_id, obj_id):
+                return {"kind": "already_known",
+                        "observation": {},
+                        "can_confirm": True,
+                        "reason": "already supported by current knowledge"}
+            return {"kind": "category_claim",
+                    "observation": {},
+                    "can_confirm": True,
+                    "reason": f"category link {subj_id}->{obj_id} kept as "
+                    "text claim (no silent reparent)"}
+        if u.predicate == "has":
+            if u.negated:
+                return {"kind": "denial",
+                        "observation": {},
+                        "can_confirm": True,
+                        "reason": "negated possession: denial claim only"}
+            if subj_id is None:
+                return None
+            return {"kind": "attribute",
+                    "observation": {"name": u.subject,
+                                   "parents": [],
+                                   "attributes": {u.object: True},
+                                   "relations": [], "source": "nl-confirm",
+                                   "utterance": u.raw},
+                    "can_confirm": True,
+                    "reason": f"attribute {u.object}=True on {subj_id}"}
+        if u.predicate == "capable":
+            if u.negated:
+                return {"kind": "denial",
+                        "observation": {},
+                        "can_confirm": True,
+                        "reason": "negated capability: denial claim only"}
+            if subj_id is None:
+                return None
+            return {"kind": "attribute",
+                    "observation": {"name": u.subject,
+                                   "parents": [],
+                                   "attributes": {"function": u.object},
+                                   "relations": [], "source": "nl-confirm",
+                                   "utterance": u.raw},
+                    "can_confirm": True,
+                    "reason": f"function={u.object} on {subj_id}"}
+        return None
+
+    def confirm_candidate(self, pid: int) -> dict:
+        """Apply a proposed candidate through existing gates.
+
+        Re-checks dedup/conflicts at apply time. Writes attributes
+        (hypothesis), denial/category claims (hypothesis) and audit
+        experiences only. Never writes verified rows.
+        """
+        import json as _json
+        row = self.mem.get_pending_candidate(pid)
+        if row is None:
+            return {"ok": False, "reason": f"no such candidate: {pid}"}
+        if row.get("status") != "proposed":
+            return {"ok": False,
+                    "reason": f"candidate is {row.get('status')}, not proposed"}
+        try:
+            obs = _json.loads(row.get("observation") or "{}")
+            parse = _json.loads(row.get("parse") or "{}")
+        except Exception:
+            return {"ok": False, "reason": "stored candidate unreadable"}
+        kind = row.get("kind", "")
+        if kind in ("unusable", ""):
+            return {"ok": False, "reason": row.get("reason") or
+                    "candidate not confirmable"}
+        if kind == "already_known":
+            self.mem.set_pending_status(pid, "accepted")
+            self.mem.add_experience(
+                "evaluation", f"candidate #{pid} already known, no writes",
+                {"candidate_id": pid})
+            return {"ok": True, "wrote": [], "reason": "already known"}
+        wrote = []
+        utterance = row.get("utterance", "")
+        if kind in ("denial", "category_claim"):
+            cid = self.mem.add_claim(
+                f"用户确认陈述：{utterance}（{kind}，hypothesis，非独立验证事实）",
+                subject_id=None, status="hypothesis", confidence=0.5)
+            self.mem.add_evidence(
+                cid, f"结构化语义：{parse}", source="nl-confirm",
+                credibility=0.5)
+            wrote.append({"claim_id": cid})
+        else:
+            res = self.learn_from_observation(obs)
+            wrote.append({"observation": res.get("observation", {})})
+        self.mem.set_pending_status(pid, "accepted")
+        self.mem.add_experience(
+            "evaluation", f"candidate #{pid} confirmed and applied",
+            {"candidate_id": pid, "kind": kind})
+        return {"ok": True, "wrote": wrote, "reason": kind}
+
+    def reject_candidate(self, pid: int) -> dict:
+        """Drop a proposed candidate. Only the status flips."""
+        row = self.mem.get_pending_candidate(pid)
+        if row is None:
+            return {"ok": False, "reason": f"no such candidate: {pid}"}
+        if row.get("status") != "proposed":
+            return {"ok": False,
+                    "reason": f"candidate is {row.get('status')}, not proposed"}
+        self.mem.set_pending_status(pid, "rejected")
+        return {"ok": True, "reason": "candidate rejected, nothing written"}
+
+    def list_pending_candidates(self, status: Optional[str] = None) -> list:
+        rows = self.mem.list_pending_candidates(status=status)
+        out = []
+        for r in rows:
+            try:
+                import json as _json
+                r = dict(r)
+                r["parse"] = _json.loads(r.get("parse") or "{}")
+                r["observation"] = _json.loads(r.get("observation") or "{}")
+            except Exception:
+                pass
+            out.append(r)
+        return out
 
     # ---- research one question ----
     def research_question(self, qid: int) -> dict:

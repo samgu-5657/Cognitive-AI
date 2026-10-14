@@ -26,8 +26,26 @@ README 讲这个项目是什么，这里记录做到哪一步、实测结果怎�
 | 适配器：网络输出只能变成 `candidate` Claim | `neural/adapter.py` | `test_neural.py` |
 | 未知样本隔离队列、人工审核、增量训练 + 回放、回归门禁、active 指针与回滚 | `neural/queue.py`, `gate.py`, `cycle.py` | `test_neural_3b.py`, `test_neural_transfer3b.py` |
 | OOD 五档判定（阈值只用 val 定），候选类别发现 + 留一验证 | `neural/ood.py`, `discovery.py` | `test_neural_3c.py`, `test_neural_discovery_xfer.py` |
+| 变量绑定多步规则推理（`?x` 合一、有界深度搜索、证明链、冲突报告，不写库） | `reasoner.py` | `test_chain_m1.py` |
+| 规则生命周期（active/candidate/validated/disabled/rejected，变更记事件）与关系行真实状态传播 | `memory.py`, `models.py`, `reasoner.py` | `test_rule_lifecycle_m2.py` |
+| 可组合中文语义解析（主体/谓词/对象/否定/能力模态，7 式切片） | `semparse.py`, `novelty.py` | `test_semparse_m3a.py` |
+| 只读语义接地（supported/conflicted/unknown/ambiguous + 证据） | `semground.py`, `models.py` | `test_semground_m3b.py` |
+| 中文陈述候选学习（learn/confirm/reject/pending，经现有生命周期门禁） | `learner.py`, `memory.py`, `cli.py` | `test_learn_nl_m3c.py` |
+| 中文问题理解与只读查询（9 式切片，supported/conflicted/unknown/ambiguous/failure） | `semparse.py`, `semground.py`, `cli.py` | `test_ask_m3d.py` |
+| 语义驱动中文回答生成（AnswerSemantics + 可组合表达库存，hypothesis/contested/inherited/unknown/limited/ambiguous/failure 分别表达，空答案守卫，生成后语义回查；默认/`--json`/`--trace`/`--json --trace` 同一次查询，CLI 单次 `answer_question()`） | `semrealize.py`, `semground.py`, `models.py`, `cli.py` | `test_realize_m3e.py` |
 
-全量测试：`pytest -q` → 装了 torch 时 78 passed；没装 torch 时 58 passed、20 skipped。
+全量测试：`pytest -q` → 装了 torch 时 180 passed（171 旧 + 9 新，0 skipped，torch 2.9.1，`py -m pytest -q` 实测）；M3E 相关（`test_realize_m3e.py` + `test_ask_m3d.py`）40 passed。
+
+### M3F-FIX-01（contested 统一 + 生命周期审计，实测）
+
+- 验证式问句遇到仅 contested 的相关证据时判 `conflicted/存疑`，不再静默 unknown；无记录仍 unknown（`semground.py:_answer_verify_has/_answer_verify_capable`，仅相关实体/键/对象参与）。
+- 中文确认产生冲突行时，经 `lifecycle.contest_attribute` 记一条 `verified→contested` 事件（旧行不动）；相同对手值不重复建行、不重复记事件（`learner.py:learn_from_observation`）。
+- 测试 `tests/test_m3f_fix01.py` 9 项（开放/验证同争议、无记录未知、双方保留、hypothesis 不升级、无关 contested 隔离、事件落库、CLI 可读、重启保持、重复确认幂等）。
+
+M3E 限制（实测确认，未解决的不宣称解决）：
+- `failure` 没有自然问句可触发的端到端路径，只验证了表达器分支（`test_m3e_fix04_failure_mapping`）。
+- 父子链接本身无可信度状态，纯继承证据只能报来源（“通过类别继承得到”），不能报已验证。
+- 只覆盖有限句型的确定性表达，不支持任意自然中文。
 
 ### 只有接口
 
