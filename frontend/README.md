@@ -13,13 +13,23 @@
 MODE=prod ./run.sh    # 生产模式：只打包一次，不热重载
 ```
 
-`run.sh` 需要 `python3`（≥ 3.12）和 `bun`；首次运行会自动执行 `bun install`。它通过 `PYTHONPATH` 加载 `src/`，不要求先 `pip install`。可用环境变量：
+Windows 下使用对应的脚本：
+
+```powershell
+run.cmd                 # CMD；自动调用 run.ps1（优先 PowerShell 7，否则 Windows PowerShell 5.1）
+.\run.ps1               # PowerShell
+.\run.ps1 -Mode prod    # 生产模式
+```
+
+如果 PowerShell 提示脚本被禁止运行，可以改用 `run.cmd`，或执行 `powershell -ExecutionPolicy Bypass -File .\run.ps1`。`run.ps1` 未指定 `PYTHON` 时依次尝试 `py -3`、`python`、`python3`，并跳过版本低于 3.12 的解释器（包括 Windows 应用商店的 `python.exe` 占位程序）。
+
+这些脚本需要 Python（≥ 3.12）和 `bun`；首次运行会自动执行 `bun install`。它们通过 `PYTHONPATH` 加载 `src/`，不要求先 `pip install`。可用环境变量（三个脚本相同）：
 
 | 变量 | 默认值 | 含义 |
 |---|---|---|
 | `BACKEND_HOST` / `BACKEND_PORT` | `127.0.0.1` / `8765` | 后端地址 |
 | `FRONTEND_HOST` / `FRONTEND_PORT` | `127.0.0.1` / `5173` | 前端地址 |
-| `PYTHON` | `python3` | Python 解释器 |
+| `PYTHON` | `python3`（`run.ps1`：自动查找） | Python 解释器；显式指定后只用它 |
 | `MODE` | `dev` | `dev`（热重载）或 `prod` |
 | `COGNITIVE_AI_DATA` | `data/` | 后端数据目录（沿用项目原有变量） |
 

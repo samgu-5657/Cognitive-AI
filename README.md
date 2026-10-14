@@ -104,6 +104,8 @@ python -m cognitive_ai.cli experiences --limit 20
 MODE=prod ./run.sh    # 生产模式，不热重载
 ```
 
+Windows 下用 `run.cmd`（CMD）或 `.\run.ps1`（PowerShell），用法和环境变量与 `run.sh` 相同，生产模式写作 `run.cmd -Mode prod`。
+
 前端本身不做分类、推理或学习，只展示后端返回的结果；对话历史和上下文只保存在浏览器本地。只有审核页或教学卡片上的「确认 / 拒绝」会调用后端的 `/api/confirm`、`/api/reject` 接口，后端与 `cli confirm` / `cli reject` 调用同一组 `Learner.confirm_candidate` / `reject_candidate` 方法。端口等配置和功能说明见 [frontend/README.md](frontend/README.md)。
 
 ### 神经网络命令
