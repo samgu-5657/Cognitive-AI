@@ -95,6 +95,17 @@ python -m cognitive_ai.cli experiences --limit 20
  "attributes": {"material": "clay", "function": "brewing"}}
 ```
 
+### Web 界面
+
+`frontend/` 是基于 Bun + React + Beer CSS（Material Design 3）的对话式 Web 前端，调用 `web_ui.py` 提供的本地 API，覆盖旧单页界面的全部功能（问答、语义分析、上下文与澄清、教学候选与审核）。需要 Python ≥ 3.12 和 [Bun](https://bun.sh)：
+
+```bash
+./run.sh              # 同时启动后端（127.0.0.1:8765）和前端（127.0.0.1:5173），Ctrl+C 一起停止
+MODE=prod ./run.sh    # 生产模式，不热重载
+```
+
+前端本身不做分类、推理或学习，只展示后端返回的结果；对话历史和上下文只保存在浏览器本地。只有审核页或教学卡片上的「确认 / 拒绝」会调用后端的 `/api/confirm`、`/api/reject` 接口，后端与 `cli confirm` / `cli reject` 调用同一组 `Learner.confirm_candidate` / `reject_candidate` 方法。端口等配置和功能说明见 [frontend/README.md](frontend/README.md)。
+
 ### 神经网络命令
 
 以下命令需要安装 PyTorch：
@@ -137,6 +148,8 @@ python -m cognitive_ai.cli neural-discover --tag cnn-v1
 | `policy.py` | 所有阈值集中在这里 |
 | `cli.py` | 命令行入口，不放业务逻辑 |
 | `neural/` | 词表、数据集、模型、训练、评测、适配器、队列、门禁、OOD、类别发现 |
+| `web_ui.py` | 本地 HTTP API（标准库），供 Web 前端调用 |
+| `frontend/` | Bun + React Web 前端（独立目录，不属于 Python 包），见 `frontend/README.md` |
 
 ## 当前已知问题
 
